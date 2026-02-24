@@ -18,9 +18,9 @@ def turn_right(d:Direction) -> Direction:
 def dir_to_vec(d: Direction) -> Tuple[int, int]:
     if d == Direction.N:
         return (0, -1)
-    elif d == Direction.E:
+    if d == Direction.E:
         return (1, 0)
-    elif d == Direction.S:
+    if d == Direction.S:
         return (0, 1)
     return (-1, 0)
 
@@ -31,6 +31,13 @@ class Action(IntEnum):
     FWD = 3
     BWD = 4
     SHOOT = 5
+
+@dataclass
+class Tank:
+    x: int
+    y: int
+    dir: Direction
+    cooldown: int = 0
 
 @dataclass
 class Target:

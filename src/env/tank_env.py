@@ -1,9 +1,8 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from email.header import FWS
-from typing import Dict, Optional,Set,Tuple
+from typing import Dict, Optional, Set, Tuple
 import numpy as np
-from .entities import Action, Direction, StepInfo, Tank,Target, dir_to_vec,turn_left, turn_right
+from .entities import Action, Direction, StepInfo, Tank, Target, dir_to_vec, turn_left, turn_right
 from .map_gen import generate_walls
 
 Coord = Tuple[int, int]
@@ -12,7 +11,7 @@ Coord = Tuple[int, int]
 class EnvState:
     tank: Tank
     target: Target
-    walls: set[Coord]
+    walls: Set[Coord]
     steps: int
     phase: int
 
@@ -45,7 +44,8 @@ class TankEnv:
             tank = Tank(
                 x=int(self.rng.integers(1, self.w - 1)),
                 y=int(self.rng.integers(1, self.h - 1)),
-                dir=Direction(int(self.rng.intergers(0,4))),
+                dir=Direction(int(self.rng.integers(0,4))),
+                cooldown=0,
             )
             target = Target(
                 x=int(self.rng.integers(1, self.w - 1)),
@@ -56,9 +56,9 @@ class TankEnv:
                 continue
 
             forbidden = {
+                (target.x, target.y),
                 (tank.x, tank.y),
-                (tank.x, target.x),
-                (tank.x + 1, target.y),
+                (tank.x + 1, tank.y),
                 (tank.x - 1, tank.y),
                 (tank.x, tank.y + 1),
                 (tank.x, tank.y - 1),
@@ -66,7 +66,7 @@ class TankEnv:
 
             walls = generate_walls(self.w, self.h, self.wall_density, self.rng, forbidden=forbidden)
 
-            if(tank.x, tank.y) in walls or (target.x, target.y) in walls:
+            if((tank.x, tank.y) in walls or (target.x, target.y) in walls):
                 continue
 
             self.state = EnvState(tank=tank, target=target, walls=walls, steps=0 ,phase=phase)
@@ -90,10 +90,10 @@ class TankEnv:
             s.tank.dir = turn_left(s.tank.dir)
         elif act == Action.RIGHT:
             s.tank.dir = turn_right(s.tank.dir)
-        elif act == Action.FWS:
-            self.move_tank(True)
-        elif act == Action.BWS:
-            self.move_tank(False)
+        elif act == Action.FWD:
+            self._move_tank(True)
+        elif act == Action.BWD:
+            self._move_tank(False)
 
         success = False
         done = False
@@ -114,12 +114,14 @@ class TankEnv:
     def _in_bounds(self, x:int,y:int) -> bool:
         return 0 <= x < self.w and 0 <= y < self.h
 
-    def _in_wall(self, x: int, y: int) -> bool:
+    def _is_wall(self, x: int, y: int) -> bool:
         if not self._in_bounds(x,y):
             return True
+        assert self.state is not None
         return (x,y) in self.state.walls
 
     def _move_tank(self, forward: bool) -> None:
+        assert self.state is not None
         dx, dy = dir_to_vec(self.state.tank.dir)
         if not forward:
             dx, dy = -dx, -dy
@@ -134,6 +136,7 @@ class TankEnv:
         self.state.tank.y = ny
 
     def _raycast_wall_dist(self, origin: Coord, direction: Coord, limit: int) -> int:
+        assert self.state is not None
         ox, oy = origin
         dx, dy = direction
         dist = 0
@@ -149,6 +152,7 @@ class TankEnv:
         return limit
 
     def _raycast_target_dist(self, origin: Coord, direction: Coord, limit: int) -> int:
+        assert self.state is not None
         ox, oy = origin
         dx, dy = direction
         dist = 0
@@ -157,7 +161,7 @@ class TankEnv:
         while dist < limit:
             if self._is_wall(x,y):
                 return -1
-            if (x,y) == (self.state.tank.x, self.state.tank.y):
+            if (x,y) == (self.state.target.x, self.state.target.y):
                 return dist
             dist += 1
             x += dx
@@ -166,6 +170,7 @@ class TankEnv:
         return -1
 
     def _get_obs(self) -> np.ndarray:
+        assert self.state is not None
         t = self.state.tank
 
         fwd = dir_to_vec(t.dir)
@@ -186,7 +191,7 @@ class TankEnv:
         dir_onehot = [0.0, 0.0, 0.0, 0.0]
         dir_onehot[int(t.dir)] = 1.0
 
-        cd_norm = float(t.cooldown) / float(self.cooldown_steps)
+        cd_norm = float(t.cooldown) / float(self.cooldown_steps) if self.cooldown_steps > 0 else 0.0
 
         return np.array(wall_norm + tgt_norm + dir_onehot + [cd_norm], dtype=np.float32)
 
