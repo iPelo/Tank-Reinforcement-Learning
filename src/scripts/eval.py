@@ -9,7 +9,7 @@ def main(render: bool = True, episodes: int = 10) -> None:
     env = TankEnv(w=15, h=15, max_steps=200, seed=0, wall_density=0.12)
     rng = np.random.default_rng(0)
 
-    renderer = PygameRenderer(cell_size=32, fps=30) if render else None
+    renderer = PygameRenderer(cell_size=32, fps=120) if render else None
 
     for ep in range(episodes):
         _ = env.reset(phase=0)
