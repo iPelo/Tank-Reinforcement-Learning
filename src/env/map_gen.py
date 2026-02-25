@@ -3,7 +3,7 @@ from typing import Iterable,  Set, Tuple
 
 Coord = Tuple[int, int]
 
-def generate_walls(
+def generate_walls  (
         w: int,
         h: int,
         density: float, rng,
