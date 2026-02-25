@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 from dataclasses import asdict
 
 import numpy as np
@@ -49,7 +50,8 @@ def main() -> None:
     algo = PPO(model=model, cfg=cfg, device=device)
     buf = RolloutBuffer(size=cfg.rollout_steps, obs_dim=obs_dim, device=device)
 
-    os.makedirs("models", exist_ok=True)
+    models_dir = Path(__file__).resolve().parent / "models"
+    models_dir.mkdir(parents=True, exist_ok=True)
 
     ep_returns = []
     ep_success = []
@@ -115,16 +117,16 @@ def main() -> None:
 
 
             if updates % 5 == 0:
-                save_ckpt("models/ppo_phase0_last.pt", model, obs_dim, act_dim, updates)
+                save_ckpt(str(models_dir / "ppo_phase0_last.pt"), model, obs_dim, act_dim, updates)
 
 
             if sr100 > best_sr100:
                 best_sr100 = sr100
-                save_ckpt("models/ppo_phase0_best.pt", model, obs_dim, act_dim, updates)
+                save_ckpt(str(models_dir / "ppo_phase0_best.pt"), model, obs_dim, act_dim, updates)
 
     except KeyboardInterrupt:
-        save_ckpt("models/ppo_phase0_last.pt", model, obs_dim, act_dim, updates)
-        print("Saved models/ppo_phase0_last.pt")
+        save_ckpt(str(models_dir / "ppo_phase0_last.pt"), model, obs_dim, act_dim, updates)
+        print(f"Saved {models_dir / 'ppo_phase0_last.pt'}")
 
 
 if __name__ == "__main__":

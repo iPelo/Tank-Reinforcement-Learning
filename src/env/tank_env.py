@@ -47,7 +47,7 @@ class TankEnv:
             x,y = q.popleft()
             if (x,y) == goal:
                 return True
-            for dx, dy in ((-1, 0), (-1, 0), (0, 1), (0, -1)):
+            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
                 nx, ny = x + dx, y + dy
                 if not(0 <= nx < self.w and 0 <= ny < self.h):
                     continue
@@ -109,6 +109,9 @@ class TankEnv:
         act = Action(int(action))
         hit = False
 
+        success = False
+        done = False
+
         if s.tank.cooldown > 0:
             s.tank.cooldown -= 1
 
@@ -120,19 +123,35 @@ class TankEnv:
             self._move_tank(True)
         elif act == Action.BWD:
             self._move_tank(False)
+        elif act == Action.SHOOT:
+            if s.phase >= 1 and s.tank.cooldown == 0:
+                fwd = dir_to_vec(s.tank.dir)
+                d = self._raycast_target_dist((s.tank.x, s.tank.y), fwd, self.ray_limit)
+                if d >= 0:
+                    hit = True
+                    success = True
+                    done = True
+                s.tank.cooldown = self.cooldown_steps
 
-        success = False
-        done = False
 
         if s.phase == 0:
             if (s.tank.x, s.tank.y) == (s.target.x, s.target.y):
                 success = True
                 done = True
 
+        if s.phase >= 1 and hit:
+            success = True
+            done = True
+
         if s.steps >= self.max_steps:
             done = True
 
-        reward = 1.0 if success else -0.01
+        if success:
+            reward = 1.0
+        elif act == Action.SHOOT and s.phase >= 1:
+            reward = -0.05
+        else:
+            reward = -0.01
 
         info = StepInfo(success=success, hit=hit, steps=s.steps, phase=s.phase)
         return self._get_obs(), float(reward), bool(done), {"info": info}
@@ -222,7 +241,7 @@ class TankEnv:
 
         cd_norm = float(t.cooldown) / float(self.cooldown_steps) if self.cooldown_steps > 0 else 0.0
 
-        return np.array(wall_norm + tgt_norm + dir_onehot + [cd_norm], dtype=np.float32)
+        return np.array(wall_norm + tgt_norm + [dx, dy] + dir_onehot + [cd_norm], dtype=np.float32)
 
 
 
