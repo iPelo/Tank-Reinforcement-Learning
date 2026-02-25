@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import torch
 import torch.nn as nn
 
-class ActionCritic(nn.Module):
+class ActorCritic(nn.Module):
     def __init__(self, obs_dim:int,act_dim:int,hidden: int = 128) -> None :
         super().__init__()
 
