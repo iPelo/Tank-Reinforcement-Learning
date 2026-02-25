@@ -37,6 +37,28 @@ class TankEnv:
         self.rng = np.random.default_rng(seed)
         self.state: Optional[EnvState] = None
 
+    def _reachable(self, start: Coord, goal: Coord,walls: Set[Coord]) -> bool:
+        from collections import deque
+
+        q = deque([start])
+        seen = {start}
+
+        while q:
+            x,y = q.popleft()
+            if (x,y) == goal:
+                return True
+            for dx, dy in ((-1, 0), (-1, 0), (0, 1), (0, -1)):
+                nx, ny = x + dx, y + dy
+                if not(0 <= nx < self.w and 0 <= ny < self.h):
+                    continue
+                if(nx,ny) in walls:
+                    continue
+                if(nx,ny) in seen:
+                    continue
+                seen.add((nx,ny))
+                q.append((nx,ny))
+        return  False
+
     def reset(self, phase: int = 0) -> np.ndarray:
         phase = int(phase)
 
@@ -65,6 +87,10 @@ class TankEnv:
             }
 
             walls = generate_walls(self.w, self.h, self.wall_density, self.rng, forbidden=forbidden)
+
+            if not self._reachable((tank.x, tank.y), (target.x, target.y), walls):
+                continue
+
 
             if((tank.x, tank.y) in walls or (target.x, target.y) in walls):
                 continue
@@ -187,6 +213,9 @@ class TankEnv:
 
         wall_norm = [d / limit for d in wall_d]
         tgt_norm = [(-1.0 if d < 0 else d / limit) for d in tgt_d]
+        tx,ty = self.state.target.x, self.state.target.y
+        dx = (tx - t.x)/max(1, self.w -1)
+        dy = (ty - t.y)/max(1, self.h -1)
 
         dir_onehot = [0.0, 0.0, 0.0, 0.0]
         dir_onehot[int(t.dir)] = 1.0
