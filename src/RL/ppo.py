@@ -1,10 +1,14 @@
 from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import Dict
+
 import torch
 import torch.nn as nn
+
 from .buffer import RolloutBuffer
 from .model import ActorCritic
+
 
 @dataclass
 class PPOConfig:
@@ -20,12 +24,13 @@ class PPOConfig:
     minibatch_size: int = 256
     update_epochs: int = 8
 
-class  PPO:
-    def __init__(self,model:ActorCritic,cfg: PPOConfig, device: torch.device) -> None:
+
+class PPO:
+    def __init__(self, model: ActorCritic, cfg: PPOConfig, device: torch.device) -> None:
         self.model = model
         self.device = device
         self.cfg = cfg
-        self.opt + torch.optim.Adam(self.model.parameters(),lr=cfg.lr)
+        self.opt = torch.optim.Adam(self.model.parameters(), lr=cfg.lr)
 
     def update(self, buf: RolloutBuffer) -> Dict[str, float]:
         adv = torch.as_tensor(buf.adv, device=self.device)
@@ -34,13 +39,12 @@ class  PPO:
 
         total_pi_loss = 0.0
         total_v_loss = 0.0
-        total_ent  = 0.0
+        total_ent = 0.0
         total_kl = 0.0
         n = 0
 
-
         for _ in range(self.cfg.update_epochs):
-            for batch in buf.iter_minibacthes(self.minibatch_size,shuffle=True):
+            for batch in buf.iter_minibatches(self.cfg.minibatch_size, shuffle=True):
                 logits, value = self.model(batch.obs)
                 dist = torch.distributions.Categorical(logits=logits)
 
@@ -70,10 +74,9 @@ class  PPO:
                 total_kl += float(approx_kl)
                 n += 1
 
-            return {
-                "pi_loss": total_pi_loss / max(1, n),
-                "v_loss": total_v_loss / max(1, n),
-                "entropy": total_ent / max(1, n),
-                "approx_kl": total_kl / max(1, n),
-            }
-
+        return {
+            "pi_loss": total_pi_loss / max(1, n),
+            "v_loss": total_v_loss / max(1, n),
+            "entropy": total_ent / max(1, n),
+            "approx_kl": total_kl / max(1, n),
+        }
