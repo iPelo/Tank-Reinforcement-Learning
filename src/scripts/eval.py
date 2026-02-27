@@ -55,7 +55,7 @@ def run_model(env: TankEnv, renderer: PygameRenderer | None, episodes: int, mode
     successes: list[int] = []
 
     for ep in range(episodes):
-        obs = env.reset(phase=0)
+        obs = env.reset(phase=1)
         total_r = 0.0
         done = False
 
