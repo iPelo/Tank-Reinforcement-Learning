@@ -67,6 +67,20 @@ class PygameRenderer:
 
         pygame.draw.line(self._screen, (255, 255, 255), (cx, cy), (cx + dx, cy + dy), 3)
 
+        shot = getattr(env, "last_shot", None)
+        ttl = getattr(env, "last_shot_ttl", 0)
+
+        if shot is not None and ttl > 0:
+            x0, y0, x1, y1, hit = shot
+
+            def center(px: int, py: int) -> tuple[int, int]:
+                return (px * cs + cs // 2, py * cs + cs // 2)
+
+            p0 = center(x0, y0)
+            p1 = center(x1, y1)
+            color = (60, 220, 120) if hit else (220, 80, 80)
+            pygame.draw.line(self._screen, color, p0, p1, 4)
+
         if text:
             font = pygame.font.SysFont(None, 20)
             surf = font.render(text, True, (230, 230, 230))

@@ -36,6 +36,8 @@ class TankEnv:
 
         self.rng = np.random.default_rng(seed)
         self.state: Optional[EnvState] = None
+        self.last_shot: Optional[Tuple[int, int, int, int, bool]] = None
+        self.last_shot_ttl: int = 0
 
     def _reachable(self, start: Coord, goal: Coord,walls: Set[Coord]) -> bool:
         from collections import deque
@@ -98,6 +100,9 @@ class TankEnv:
             self.state = EnvState(tank=tank, target=target, walls=walls, steps=0 ,phase=phase)
             break
 
+        self.last_shot = None
+        self.last_shot_ttl = 0
+
         return self._get_obs()
 
     def step(self,action: int) -> Tuple[np.ndarray, float, bool, Dict]:
@@ -108,6 +113,11 @@ class TankEnv:
         s.steps += 1
         act = Action(int(action))
         hit = False
+
+        if self.last_shot_ttl > 0:
+            self.last_shot_ttl -= 1
+            if self.last_shot_ttl == 0:
+                self.last_shot = None
 
         success = False
         done = False
@@ -126,11 +136,38 @@ class TankEnv:
         elif act == Action.SHOOT:
             if s.phase >= 1 and s.tank.cooldown == 0:
                 fwd = dir_to_vec(s.tank.dir)
-                d = self._raycast_target_dist((s.tank.x, s.tank.y), fwd, self.ray_limit)
-                if d >= 0:
-                    hit = True
+                x0, y0 = s.tank.x, s.tank.y
+                dx, dy = fwd
+
+                hit = False
+                endx, endy = x0, y0
+                x, y = x0, y0
+
+                for _ in range(self.ray_limit):
+                    nx, ny = x + dx, y + dy
+
+                    if not (0 <= nx < self.w and 0 <= ny < self.h):
+                        endx, endy = x, y
+                        break
+
+                    if self._is_wall(nx, ny):
+                        endx, endy = nx, ny
+                        break
+
+                    x, y = nx, ny
+                    endx, endy = x, y
+
+                    if (x, y) == (s.target.x, s.target.y):
+                        hit = True
+                        break
+
+                self.last_shot = (x0, y0, endx, endy, hit)
+                self.last_shot_ttl = 6
+
+                if hit:
                     success = True
                     done = True
+
                 s.tank.cooldown = self.cooldown_steps
 
 
@@ -154,7 +191,7 @@ class TankEnv:
             reward = -0.01
 
         info = StepInfo(success=success, hit=hit, steps=s.steps, phase=s.phase)
-        return self._get_obs(), float(reward), bool(done), {"info": info}
+        return self._get_obs(), float(reward), bool(done), {"info": info, "shot": self.last_shot, "shot_ttl": self.last_shot_ttl}
 
     def _in_bounds(self, x:int,y:int) -> bool:
         return 0 <= x < self.w and 0 <= y < self.h
