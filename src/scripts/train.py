@@ -27,7 +27,8 @@ def main() -> None:
     device = torch.device("cpu")
 
     env = TankEnv(w=15, h=15, max_steps=200, seed=0, wall_density=0.12)
-    obs = env.reset(phase=0)
+    phase = 1
+    obs = env.reset(phase=phase)
 
     obs_dim = int(obs.shape[0])  # 15
     act_dim = 6
@@ -91,7 +92,7 @@ def main() -> None:
                     ep_returns.append(ep_ret)
                     ep_success.append(int(si.success))
 
-                    obs = env.reset(phase=0)
+                    obs = env.reset(phase=phase)
                     ep_ret = 0.0
 
             obs_t = torch.as_tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
@@ -118,16 +119,16 @@ def main() -> None:
 
 
             if updates % 5 == 0:
-                save_ckpt(str(models_dir / "ppo_phase0_last.pt"), model, obs_dim, act_dim, updates)
+                save_ckpt(str(models_dir / "ppo_phase1_last.pt"), model, obs_dim, act_dim, updates)
 
 
             if sr100 > best_sr100:
                 best_sr100 = sr100
-                save_ckpt(str(models_dir / "ppo_phase0_best.pt"), model, obs_dim, act_dim, updates)
+                save_ckpt(str(models_dir / "ppo_phase1_best.pt"), model, obs_dim, act_dim, updates)
 
     except KeyboardInterrupt:
-        save_ckpt(str(models_dir / "ppo_phase0_last.pt"), model, obs_dim, act_dim, updates)
-        print(f"Saved {models_dir / 'ppo_phase0_last.pt'}")
+        save_ckpt(str(models_dir / "ppo_phase1_last.pt"), model, obs_dim, act_dim, updates)
+        print(f"Saved {models_dir / 'ppo_phase1_last.pt'}")
 
 
 if __name__ == "__main__":
