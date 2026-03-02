@@ -127,8 +127,8 @@ def main() -> None:
                 save_ckpt(str(models_dir / "ppo_phase2_best.pt"), model, obs_dim, act_dim, updates)
 
     except KeyboardInterrupt:
-        save_ckpt(str(models_dir / "ppo_phase1_last.pt"), model, obs_dim, act_dim, updates)
-        print(f"Saved {models_dir / 'ppo_phase1_last.pt'}")
+        save_ckpt(str(models_dir / "ppo_phase2_last.pt"), model, obs_dim, act_dim, updates)
+        print(f"Saved {models_dir / 'ppo_phase2_last.pt'}")
 
 
 if __name__ == "__main__":
