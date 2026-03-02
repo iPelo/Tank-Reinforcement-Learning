@@ -124,7 +124,7 @@ def main() -> None:
 
             if sr100 > best_sr100:
                 best_sr100 = sr100
-                save_ckpt(str(models_dir / "ppo_phase1_best.pt"), model, obs_dim, act_dim, updates)
+                save_ckpt(str(models_dir / "ppo_phase2_best.pt"), model, obs_dim, act_dim, updates)
 
     except KeyboardInterrupt:
         save_ckpt(str(models_dir / "ppo_phase1_last.pt"), model, obs_dim, act_dim, updates)
