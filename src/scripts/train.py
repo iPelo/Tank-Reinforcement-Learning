@@ -119,7 +119,7 @@ def main() -> None:
 
 
             if updates % 5 == 0:
-                save_ckpt(str(models_dir / "ppo_phase1_last.pt"), model, obs_dim, act_dim, updates)
+                save_ckpt(str(models_dir / "ppo_phase2_last.pt"), model, obs_dim, act_dim, updates)
 
 
             if sr100 > best_sr100:
