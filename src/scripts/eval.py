@@ -94,7 +94,7 @@ def main() -> None:
     args = ap.parse_args()
 
     env = TankEnv(w=15, h=15, max_steps=200, seed=0, wall_density=0.12)
-    renderer = PygameRenderer(cell_size=32, fps=120) if args.render else None
+    renderer = PygameRenderer(cell_size=32, fps=20) if args.render else None
 
     try:
         if args.model:
