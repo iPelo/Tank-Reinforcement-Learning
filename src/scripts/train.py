@@ -27,7 +27,7 @@ def main() -> None:
     device = torch.device("cpu")
 
     env = TankEnv(w=15, h=15, max_steps=200, seed=0, wall_density=0.12)
-    phase = 1
+    phase = 2
     obs = env.reset(phase=phase)
 
     obs_dim = int(obs.shape[0])  # 15
