@@ -170,6 +170,21 @@ class TankEnv:
 
                 s.tank.cooldown = self.cooldown_steps
 
+        if s.phase >= 2 and (s.steps % 3 == 0):
+            dirs = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+            self.rng.shuffle(dirs)
+            for dx, dy in dirs:
+                nx, ny = s.target.x + dx, s.target.y + dy
+                if not self._in_bounds(nx, ny):
+                    continue
+                if self._is_wall(nx, ny):
+                    continue
+                if (nx, ny) == (s.tank.x, s.tank.y):
+                    continue
+                s.target.x = nx
+                s.target.y = ny
+                break
+
 
         if s.phase == 0:
             if (s.tank.x, s.tank.y) == (s.target.x, s.target.y):
