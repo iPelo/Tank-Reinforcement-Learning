@@ -12,6 +12,8 @@ from src.RL.model import ActorCritic
 def run_random(env: TankEnv, renderer: PygameRenderer | None, episodes: int, seed: int, phase: int) -> None:
     rng = np.random.default_rng(seed)
     wins: list[int] = []
+    losses: list[int] = []
+    draws: list[int] = []
 
     for ep in range(episodes):
         _ = env.reset(phase=phase)
@@ -32,15 +34,21 @@ def run_random(env: TankEnv, renderer: PygameRenderer | None, episodes: int, see
 
         si = info["info"]
         wins.append(int(si.player_win))
+        losses.append(int(si.enemy_win))
+        draws.append(int(si.draw))
         if len(wins) > 100:
             wins.pop(0)
+            losses.pop(0)
+            draws.pop(0)
         wr = sum(wins) / len(wins)
+        lr = sum(losses) / len(losses)
+        dr = sum(draws) / len(draws)
 
         print(
             f"RAND EP {ep:03d} | steps={si.steps:3d} "
             f"| R={total_r:6.2f} "
             f"| win={si.player_win} loss={si.enemy_win} draw={si.draw}"
-            f"| last100_wr={wr:.2f}"
+            f"| last100_wr={wr:.2f} lr={lr:.2f} dr={dr:.2f}"
         )
 
 
@@ -56,6 +64,8 @@ def run_model(env: TankEnv, renderer: PygameRenderer | None, episodes: int, mode
     model.eval()
 
     wins: list[int] = []
+    losses: list[int] = []
+    draws: list[int] = []
 
     for ep in range(episodes):
         obs = env.reset(phase=phase)
@@ -80,15 +90,21 @@ def run_model(env: TankEnv, renderer: PygameRenderer | None, episodes: int, mode
 
         si = info["info"]
         wins.append(int(si.player_win))
+        losses.append(int(si.enemy_win))
+        draws.append(int(si.draw))
         if len(wins) > 100:
             wins.pop(0)
+            losses.pop(0)
+            draws.pop(0)
         wr = sum(wins) / len(wins)
+        lr = sum(losses) / len(losses)
+        dr = sum(draws) / len(draws)
 
         print(
             f"PPO  EP {ep:03d} | steps={si.steps:3d} "
             f"| R={total_r:6.2f} "
             f"| win={si.player_win} loss={si.enemy_win} draw={si.draw}"
-            f"| last100_wr={wr:.2f}"
+            f"| last100_wr={wr:.2f} lr={lr:.2f} dr={dr:.2f}"
         )
 
 

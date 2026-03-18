@@ -60,6 +60,8 @@ def main() -> None:
 
     ep_returns = []
     ep_wins = []
+    ep_losses = []
+    ep_draws = []
 
     ep_ret = 0.0
     global_step = 0
@@ -95,6 +97,8 @@ def main() -> None:
                     si = info["info"]
                     ep_returns.append(ep_ret)
                     ep_wins.append(int(si.player_win))
+                    ep_losses.append(int(si.enemy_win))
+                    ep_draws.append(int(si.draw))
 
                     obs = env.reset(phase=phase)
                     ep_ret = 0.0
@@ -113,10 +117,13 @@ def main() -> None:
                 float(np.mean(ep_returns)) if ep_returns else 0.0
             )
             wr100 = float(np.mean(ep_wins[-100:])) if ep_wins else 0.0
+            lr100 = float(np.mean(ep_losses[-100:])) if ep_losses else 0.0
+            dr100 = float(np.mean(ep_draws[-100:])) if ep_draws else 0.0
 
             print(
                 f"upd={updates:04d} steps={global_step:07d} mean_ret10={mean_ret10:7.3f} "
-                f"wr100={wr100:5.2f} pi={metrics['pi_loss']:.3f} v={metrics['v_loss']:.3f} "
+                f"wr100={wr100:5.2f} lr100={lr100:5.2f} dr100={dr100:5.2f} "
+                f"pi={metrics['pi_loss']:.3f} v={metrics['v_loss']:.3f} "
                 f"ent={metrics['entropy']:.3f} kl={metrics['approx_kl']:.3f}"
             )
 
