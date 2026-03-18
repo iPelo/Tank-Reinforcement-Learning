@@ -44,42 +44,43 @@ class PygameRenderer:
         for (wx, wy) in env.state.walls:
             pygame.draw.rect(self._screen, (70, 70, 70), (wx * cs, wy * cs, cs, cs))
 
-        # target
-        tx, ty = env.state.target.x, env.state.target.y
-        pygame.draw.rect(self._screen, (200, 180, 60), (tx * cs, ty * cs, cs, cs))
+        def draw_tank(tank, body_color):
+            x, y = tank.x, tank.y
+            pygame.draw.rect(self._screen, body_color, (x * cs, y * cs, cs, cs))
 
-        # tank
-        x, y = env.state.tank.x, env.state.tank.y
-        pygame.draw.rect(self._screen, (60, 160, 220), (x * cs, y * cs, cs, cs))
+            cx, cy = x * cs + cs // 2, y * cs + cs // 2
+            dx, dy = 0, 0
 
-        # facing direction indicator
-        cx, cy = x * cs + cs // 2, y * cs + cs // 2
-        dx, dy = 0, 0
+            if tank.dir == Direction.N:
+                dy = -cs // 3
+            elif tank.dir == Direction.E:
+                dx = cs // 3
+            elif tank.dir == Direction.S:
+                dy = cs // 3
+            elif tank.dir == Direction.W:
+                dx = -cs // 3
 
-        if env.state.tank.dir == Direction.N:
-            dy = -cs // 3
-        elif env.state.tank.dir == Direction.E:
-            dx = cs // 3
-        elif env.state.tank.dir == Direction.S:
-            dy = cs // 3
-        elif env.state.tank.dir == Direction.W:
-            dx = -cs // 3
+            pygame.draw.line(self._screen, (255, 255, 255), (cx, cy), (cx + dx, cy + dy), 3)
 
-        pygame.draw.line(self._screen, (255, 255, 255), (cx, cy), (cx + dx, cy + dy), 3)
+        draw_tank(env.state.player, (60, 160, 220))
+        draw_tank(env.state.enemy, (220, 120, 60))
 
         shot = getattr(env, "last_shot", None)
         ttl = getattr(env, "last_shot_ttl", 0)
 
         if shot is not None and ttl > 0:
-            x0, y0, x1, y1, hit = shot
-
             def center(px: int, py: int) -> tuple[int, int]:
                 return (px * cs + cs // 2, py * cs + cs // 2)
 
-            p0 = center(x0, y0)
-            p1 = center(x1, y1)
-            color = (60, 220, 120) if hit else (220, 80, 80)
-            pygame.draw.line(self._screen, color, p0, p1, 4)
+            for who, shot_data in shot.items():
+                x0, y0, x1, y1, hit = shot_data
+                p0 = center(x0, y0)
+                p1 = center(x1, y1)
+                if who == "player":
+                    color = (60, 220, 120) if hit else (120, 220, 255)
+                else:
+                    color = (255, 180, 60) if hit else (220, 80, 80)
+                pygame.draw.line(self._screen, color, p0, p1, 4)
 
         if text:
             font = pygame.font.SysFont(None, 20)

@@ -11,10 +11,10 @@ from src.RL.model import ActorCritic
 
 def run_random(env: TankEnv, renderer: PygameRenderer | None, episodes: int, seed: int) -> None:
     rng = np.random.default_rng(seed)
-    successes: list[int] = []
+    wins: list[int] = []
 
     for ep in range(episodes):
-        _ = env.reset(phase=0)
+        _ = env.reset(phase=2) #change this
         total_r = 0.0
         done = False
 
@@ -25,19 +25,22 @@ def run_random(env: TankEnv, renderer: PygameRenderer | None, episodes: int, see
 
             if renderer is not None:
                 si = info["info"]
-                renderer.render(env, text=f"RAND ep={ep} steps={si.steps} R={total_r:.2f} success={si.success}")
+                renderer.render(
+                    env,
+                    text=f"RAND ep={ep} steps={si.steps} R={total_r:.2f} win={si.player_win} draw={si.draw}",
+                )
 
         si = info["info"]
-        successes.append(int(si.success))
-        if len(successes) > 100:
-            successes.pop(0)
-        sr = sum(successes) / len(successes)
+        wins.append(int(si.player_win))
+        if len(wins) > 100:
+            wins.pop(0)
+        wr = sum(wins) / len(wins)
 
         print(
             f"RAND EP {ep:03d} | steps={si.steps:3d} "
             f"| R={total_r:6.2f} "
-            f"| success={si.success}"
-            f"| last100_sr={sr:.2f}"
+            f"| win={si.player_win} loss={si.enemy_win} draw={si.draw}"
+            f"| last100_wr={wr:.2f}"
         )
 
 
@@ -52,7 +55,7 @@ def run_model(env: TankEnv, renderer: PygameRenderer | None, episodes: int, mode
     model.load_state_dict(ckpt["model"])
     model.eval()
 
-    successes: list[int] = []
+    wins: list[int] = []
 
     for ep in range(episodes):
         obs = env.reset(phase=2) #change this
@@ -70,19 +73,22 @@ def run_model(env: TankEnv, renderer: PygameRenderer | None, episodes: int, mode
 
             if renderer is not None:
                 si = info["info"]
-                renderer.render(env, text=f"PPO ep={ep} steps={si.steps} R={total_r:.2f} success={si.success}")
+                renderer.render(
+                    env,
+                    text=f"PPO ep={ep} steps={si.steps} R={total_r:.2f} win={si.player_win} draw={si.draw}",
+                )
 
         si = info["info"]
-        successes.append(int(si.success))
-        if len(successes) > 100:
-            successes.pop(0)
-        sr = sum(successes) / len(successes)
+        wins.append(int(si.player_win))
+        if len(wins) > 100:
+            wins.pop(0)
+        wr = sum(wins) / len(wins)
 
         print(
             f"PPO  EP {ep:03d} | steps={si.steps:3d} "
             f"| R={total_r:6.2f} "
-            f"| success={si.success}"
-            f"| last100_sr={sr:.2f}"
+            f"| win={si.player_win} loss={si.enemy_win} draw={si.draw}"
+            f"| last100_wr={wr:.2f}"
         )
 
 

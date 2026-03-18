@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 from dataclasses import asdict
 
@@ -55,13 +54,13 @@ def main() -> None:
     models_dir.mkdir(parents=True, exist_ok=True)
 
     ep_returns = []
-    ep_success = []
+    ep_wins = []
 
     ep_ret = 0.0
     global_step = 0
     updates = 0
 
-    best_sr100 = -1.0  # best success rate over last 100 episodes
+    best_wr100 = -1.0
 
     print("PPO config:", asdict(cfg))
 
@@ -90,7 +89,7 @@ def main() -> None:
                 if done:
                     si = info["info"]
                     ep_returns.append(ep_ret)
-                    ep_success.append(int(si.success))
+                    ep_wins.append(int(si.player_win))
 
                     obs = env.reset(phase=phase)
                     ep_ret = 0.0
@@ -108,11 +107,11 @@ def main() -> None:
             mean_ret10 = float(np.mean(ep_returns[-10:])) if len(ep_returns) >= 10 else (
                 float(np.mean(ep_returns)) if ep_returns else 0.0
             )
-            sr100 = float(np.mean(ep_success[-100:])) if ep_success else 0.0
+            wr100 = float(np.mean(ep_wins[-100:])) if ep_wins else 0.0
 
             print(
                 f"upd={updates:04d} steps={global_step:07d} mean_ret10={mean_ret10:7.3f} "
-                f"sr100={sr100:5.2f} pi={metrics['pi_loss']:.3f} v={metrics['v_loss']:.3f} "
+                f"wr100={wr100:5.2f} pi={metrics['pi_loss']:.3f} v={metrics['v_loss']:.3f} "
                 f"ent={metrics['entropy']:.3f} kl={metrics['approx_kl']:.3f}"
             )
 
@@ -122,8 +121,8 @@ def main() -> None:
                 save_ckpt(str(models_dir / "ppo_phase2_last.pt"), model, obs_dim, act_dim, updates)
 
 
-            if sr100 > best_sr100:
-                best_sr100 = sr100
+            if wr100 > best_wr100:
+                best_wr100 = wr100
                 save_ckpt(str(models_dir / "ppo_phase2_best.pt"), model, obs_dim, act_dim, updates)
 
     except KeyboardInterrupt:

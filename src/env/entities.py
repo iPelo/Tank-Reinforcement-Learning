@@ -38,15 +38,14 @@ class Tank:
     y: int
     dir: Direction
     cooldown: int = 0
-
-@dataclass
-class Target:
-    x: int
-    y: int
+    alive: bool = True
 
 @dataclass
 class StepInfo:
-    success: bool
-    hit: bool
+    player_win: bool
+    enemy_win: bool
+    draw: bool
+    player_hit: bool
+    enemy_hit: bool
     steps: int
     phase: int
