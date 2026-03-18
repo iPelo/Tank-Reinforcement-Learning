@@ -1,0 +1,76 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Train Phase 0",
+      "type": "python",
+      "request": "launch",
+      "module": "src.scripts.train",
+      "args": ["--phase", "0"],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Train Phase 1",
+      "type": "python",
+      "request": "launch",
+      "module": "src.scripts.train",
+      "args": ["--phase", "1"],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Train Phase 2",
+      "type": "python",
+      "request": "launch",
+      "module": "src.scripts.train",
+      "args": ["--phase", "2"],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Eval Random Phase 0",
+      "type": "python",
+      "request": "launch",
+      "module": "src.scripts.eval",
+      "args": ["--phase", "0", "--episodes", "10", "--render"],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Eval Random Phase 1",
+      "type": "python",
+      "request": "launch",
+      "module": "src.scripts.eval",
+      "args": ["--phase", "1", "--episodes", "10", "--render"],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Eval Random Phase 2",
+      "type": "python",
+      "request": "launch",
+      "module": "src.scripts.eval",
+      "args": ["--phase", "2", "--episodes", "10", "--render"],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Eval Saved Model Phase 2",
+      "type": "python",
+      "request": "launch",
+      "module": "src.scripts.eval",
+      "args": [
+        "--phase",
+        "2",
+        "--episodes",
+        "10",
+        "--render",
+        "--model",
+        "src/scripts/models/ppo_phase2_last.pt"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}"
+    }
+  ]
+}
