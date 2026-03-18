@@ -1,3 +1,4 @@
+import argparse
 from pathlib import Path
 from dataclasses import asdict
 
@@ -23,10 +24,14 @@ def save_ckpt(path: str, model: ActorCritic, obs_dim: int, act_dim: int, updates
 
 
 def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--phase", type=int, default=2, choices=(0, 1, 2))
+    args = ap.parse_args()
+
     device = torch.device("cpu")
 
     env = TankEnv(w=15, h=15, max_steps=200, seed=0, wall_density=0.12)
-    phase = 2
+    phase = args.phase
     obs = env.reset(phase=phase)
 
     obs_dim = int(obs.shape[0])  # 15
@@ -115,19 +120,17 @@ def main() -> None:
                 f"ent={metrics['entropy']:.3f} kl={metrics['approx_kl']:.3f}"
             )
 
-
-
             if updates % 5 == 0:
-                save_ckpt(str(models_dir / "ppo_phase2_last.pt"), model, obs_dim, act_dim, updates)
+                save_ckpt(str(models_dir / f"ppo_phase{phase}_last.pt"), model, obs_dim, act_dim, updates)
 
 
             if wr100 > best_wr100:
                 best_wr100 = wr100
-                save_ckpt(str(models_dir / "ppo_phase2_best.pt"), model, obs_dim, act_dim, updates)
+                save_ckpt(str(models_dir / f"ppo_phase{phase}_best.pt"), model, obs_dim, act_dim, updates)
 
     except KeyboardInterrupt:
-        save_ckpt(str(models_dir / "ppo_phase2_last.pt"), model, obs_dim, act_dim, updates)
-        print(f"Saved {models_dir / 'ppo_phase2_last.pt'}")
+        save_ckpt(str(models_dir / f"ppo_phase{phase}_last.pt"), model, obs_dim, act_dim, updates)
+        print(f"Saved {models_dir / f'ppo_phase{phase}_last.pt'}")
 
 
 if __name__ == "__main__":

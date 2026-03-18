@@ -9,12 +9,12 @@ from src.env.render import PygameRenderer
 from src.RL.model import ActorCritic
 
 
-def run_random(env: TankEnv, renderer: PygameRenderer | None, episodes: int, seed: int) -> None:
+def run_random(env: TankEnv, renderer: PygameRenderer | None, episodes: int, seed: int, phase: int) -> None:
     rng = np.random.default_rng(seed)
     wins: list[int] = []
 
     for ep in range(episodes):
-        _ = env.reset(phase=2) #change this
+        _ = env.reset(phase=phase)
         total_r = 0.0
         done = False
 
@@ -44,7 +44,7 @@ def run_random(env: TankEnv, renderer: PygameRenderer | None, episodes: int, see
         )
 
 
-def run_model(env: TankEnv, renderer: PygameRenderer | None, episodes: int, model_path: str) -> None:
+def run_model(env: TankEnv, renderer: PygameRenderer | None, episodes: int, model_path: str, phase: int) -> None:
     device = torch.device("cpu")
     ckpt = torch.load(model_path, map_location=device)
 
@@ -58,7 +58,7 @@ def run_model(env: TankEnv, renderer: PygameRenderer | None, episodes: int, mode
     wins: list[int] = []
 
     for ep in range(episodes):
-        obs = env.reset(phase=2) #change this
+        obs = env.reset(phase=phase)
         total_r = 0.0
         done = False
 
@@ -95,6 +95,7 @@ def run_model(env: TankEnv, renderer: PygameRenderer | None, episodes: int, mode
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--episodes", type=int, default=10)
+    ap.add_argument("--phase", type=int, default=2, choices=(0, 1, 2))
     ap.add_argument("--render", action="store_true")
     ap.add_argument("--model", type=str, default="")
     args = ap.parse_args()
@@ -104,9 +105,9 @@ def main() -> None:
 
     try:
         if args.model:
-            run_model(env, renderer, args.episodes, args.model)
+            run_model(env, renderer, args.episodes, args.model, args.phase)
         else:
-            run_random(env, renderer, args.episodes, seed=0)
+            run_random(env, renderer, args.episodes, seed=0, phase=args.phase)
     finally:
         if renderer is not None:
             time.sleep(0.25)
