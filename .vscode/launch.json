@@ -2,29 +2,47 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Train Phase 0",
+      "name": "Train Curriculum",
       "type": "python",
       "request": "launch",
       "module": "src.scripts.train",
-      "args": ["--phase", "0"],
+      "args": [],
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}"
     },
     {
-      "name": "Train Phase 1",
+      "name": "Train Phase 0 Only",
       "type": "python",
       "request": "launch",
       "module": "src.scripts.train",
-      "args": ["--phase", "1"],
+      "args": ["--phase", "0", "--single-phase"],
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}"
     },
     {
-      "name": "Train Phase 2",
+      "name": "Train Phase 1 Only",
       "type": "python",
       "request": "launch",
       "module": "src.scripts.train",
-      "args": ["--phase", "2"],
+      "args": ["--phase", "1", "--single-phase"],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Train Phase 2 Only",
+      "type": "python",
+      "request": "launch",
+      "module": "src.scripts.train",
+      "args": ["--phase", "2", "--single-phase"],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Resume Phase 2 Checkpoint",
+      "type": "python",
+      "request": "launch",
+      "module": "src.scripts.train",
+      "args": ["--resume", "src/scripts/models/ppo_phase2_last.pt"],
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}"
     },

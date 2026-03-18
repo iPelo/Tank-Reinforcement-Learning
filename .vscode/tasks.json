@@ -2,30 +2,50 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "Train Phase 0",
+      "label": "Train Curriculum",
       "type": "shell",
       "command": "${workspaceFolder}/.venv/bin/python",
-      "args": ["-m", "src.scripts.train", "--phase", "0"],
+      "args": ["-m", "src.scripts.train"],
       "options": {
         "cwd": "${workspaceFolder}"
       },
       "problemMatcher": []
     },
     {
-      "label": "Train Phase 1",
+      "label": "Train Phase 0 Only",
       "type": "shell",
       "command": "${workspaceFolder}/.venv/bin/python",
-      "args": ["-m", "src.scripts.train", "--phase", "1"],
+      "args": ["-m", "src.scripts.train", "--phase", "0", "--single-phase"],
       "options": {
         "cwd": "${workspaceFolder}"
       },
       "problemMatcher": []
     },
     {
-      "label": "Train Phase 2",
+      "label": "Train Phase 1 Only",
       "type": "shell",
       "command": "${workspaceFolder}/.venv/bin/python",
-      "args": ["-m", "src.scripts.train", "--phase", "2"],
+      "args": ["-m", "src.scripts.train", "--phase", "1", "--single-phase"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Train Phase 2 Only",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python",
+      "args": ["-m", "src.scripts.train", "--phase", "2", "--single-phase"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Resume Phase 2 Checkpoint",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python",
+      "args": ["-m", "src.scripts.train", "--resume", "src/scripts/models/ppo_phase2_last.pt"],
       "options": {
         "cwd": "${workspaceFolder}"
       },
