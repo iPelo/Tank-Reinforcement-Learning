@@ -93,15 +93,13 @@ src/
 │   ├── entities.py
 │   └── map_gen.py
 ├── evaluation/
-│   ├── eval_match.py
-│   └── watch.py
+│   └── eval_match.py
 ├── training/
 │   ├── buffer.py
 │   └── ppo.py
 └── scripts/
     ├── train.py
     ├── eval.py
-    ├── watch.py
     └── models/
 ```
 
