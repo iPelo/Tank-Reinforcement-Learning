@@ -84,29 +84,36 @@ Episodes end when:
 
 ```bash
 src/
+├── agents/
+│   ├── policy.py
+│   └── scripted_baselines.py
 ├── env/
 │   ├── tank_env.py
 │   ├── render.py
 │   ├── entities.py
 │   └── map_gen.py
-├── RL/
-│   ├── model.py
+├── evaluation/
+│   ├── eval_match.py
+│   └── watch.py
+├── training/
 │   ├── buffer.py
 │   └── ppo.py
 └── scripts/
     ├── train.py
     ├── eval.py
+    ├── watch.py
     └── models/
 ```
 
 Key files:
 
 - `src/env/tank_env.py`: custom tank battle environment
-- `src/RL/model.py`: actor-critic neural network
-- `src/RL/buffer.py`: rollout buffer and GAE computation
-- `src/RL/ppo.py`: PPO update logic
+- `src/agents/policy.py`: actor-critic policy network
+- `src/training/buffer.py`: rollout buffer and GAE computation
+- `src/training/ppo.py`: PPO update logic
 - `src/scripts/train.py`: training entry point
-- `src/scripts/eval.py`: evaluation and rendering script
+- `src/evaluation/eval_match.py`: evaluation and rendering implementation
+- `src/scripts/eval.py`: thin evaluation entry point
 
 ---
 

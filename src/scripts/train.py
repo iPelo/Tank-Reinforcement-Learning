@@ -6,9 +6,9 @@ import numpy as np
 import torch
 
 from src.env.tank_env import TankEnv
-from src.RL.buffer import RolloutBuffer
-from src.RL.model import ActorCritic
-from src.RL.ppo import PPO, PPOConfig
+from src.agents.policy import ActorCritic
+from src.training.buffer import RolloutBuffer
+from src.training.ppo import PPO, PPOConfig
 
 
 def save_ckpt(path: Path, model: ActorCritic, obs_dim: int, act_dim: int, updates: int, phase: int) -> None:
