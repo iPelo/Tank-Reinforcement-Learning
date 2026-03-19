@@ -11,44 +11,51 @@ from src.agents.policy import ActorCritic
 
 def run_random(env: TankEnv, renderer: PygameRenderer | None, episodes: int, seed: int, phase: int) -> None:
     rng = np.random.default_rng(seed)
-    wins: list[int] = []
-    losses: list[int] = []
+    player_wins: list[int] = []
+    enemy_wins: list[int] = []
     draws: list[int] = []
 
     for ep in range(episodes):
         _ = env.reset(phase=phase)
-        total_r = 0.0
+        returns = {"player": 0.0, "enemy": 0.0}
         done = False
 
         while not done:
-            action = int(rng.integers(0, 6))
-            _, r, done, info = env.step(action)
-            total_r += float(r)
+            actions = {
+                "player": int(rng.integers(0, 6)),
+                "enemy": int(rng.integers(0, 6)),
+            }
+            _, rewards, done, info = env.step(actions)
+            returns["player"] += float(rewards["player"])
+            returns["enemy"] += float(rewards["enemy"])
 
             if renderer is not None:
                 si = info["info"]
                 renderer.render(
                     env,
-                    text=f"RAND ep={ep} steps={si.steps} R={total_r:.2f} win={si.player_win} draw={si.draw}",
+                    text=(
+                        f"RAND ep={ep} steps={si.steps} "
+                        f"Rp={returns['player']:.2f} Re={returns['enemy']:.2f}"
+                    ),
                 )
 
         si = info["info"]
-        wins.append(int(si.player_win))
-        losses.append(int(si.enemy_win))
+        player_wins.append(int(si.player_win))
+        enemy_wins.append(int(si.enemy_win))
         draws.append(int(si.draw))
-        if len(wins) > 100:
-            wins.pop(0)
-            losses.pop(0)
+        if len(player_wins) > 100:
+            player_wins.pop(0)
+            enemy_wins.pop(0)
             draws.pop(0)
-        wr = sum(wins) / len(wins)
-        lr = sum(losses) / len(losses)
+        wr = sum(player_wins) / len(player_wins)
+        lr = sum(enemy_wins) / len(enemy_wins)
         dr = sum(draws) / len(draws)
 
         print(
             f"RAND EP {ep:03d} | steps={si.steps:3d} "
-            f"| R={total_r:6.2f} "
-            f"| win={si.player_win} loss={si.enemy_win} draw={si.draw}"
-            f"| last100_wr={wr:.2f} lr={lr:.2f} dr={dr:.2f}"
+            f"| Rp={returns['player']:6.2f} Re={returns['enemy']:6.2f} "
+            f"| player_win={si.player_win} enemy_win={si.enemy_win} draw={si.draw}"
+            f"| last100_pwr={wr:.2f} ewr={lr:.2f} dr={dr:.2f}"
         )
 
 
@@ -63,48 +70,54 @@ def run_model(env: TankEnv, renderer: PygameRenderer | None, episodes: int, mode
     model.load_state_dict(ckpt["model"])
     model.eval()
 
-    wins: list[int] = []
-    losses: list[int] = []
+    player_wins: list[int] = []
+    enemy_wins: list[int] = []
     draws: list[int] = []
 
     for ep in range(episodes):
-        obs = env.reset(phase=phase)
-        total_r = 0.0
+        obs_by_agent = env.reset(phase=phase)
+        returns = {"player": 0.0, "enemy": 0.0}
         done = False
 
         while not done:
-            obs_t = torch.as_tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
-            with torch.no_grad():
-                action_t, _, _ = model.act(obs_t)
-            action = int(action_t.item())
+            actions: dict[str, int] = {}
+            for agent_id in ("player", "enemy"):
+                obs_t = torch.as_tensor(obs_by_agent[agent_id], dtype=torch.float32, device=device).unsqueeze(0)
+                with torch.no_grad():
+                    action_t, _, _ = model.act(obs_t)
+                actions[agent_id] = int(action_t.item())
 
-            obs, r, done, info = env.step(action)
-            total_r += float(r)
+            obs_by_agent, rewards, done, info = env.step(actions)
+            returns["player"] += float(rewards["player"])
+            returns["enemy"] += float(rewards["enemy"])
 
             if renderer is not None:
                 si = info["info"]
                 renderer.render(
                     env,
-                    text=f"PPO ep={ep} steps={si.steps} R={total_r:.2f} win={si.player_win} draw={si.draw}",
+                    text=(
+                        f"PPO ep={ep} steps={si.steps} "
+                        f"Rp={returns['player']:.2f} Re={returns['enemy']:.2f}"
+                    ),
                 )
 
         si = info["info"]
-        wins.append(int(si.player_win))
-        losses.append(int(si.enemy_win))
+        player_wins.append(int(si.player_win))
+        enemy_wins.append(int(si.enemy_win))
         draws.append(int(si.draw))
-        if len(wins) > 100:
-            wins.pop(0)
-            losses.pop(0)
+        if len(player_wins) > 100:
+            player_wins.pop(0)
+            enemy_wins.pop(0)
             draws.pop(0)
-        wr = sum(wins) / len(wins)
-        lr = sum(losses) / len(losses)
+        wr = sum(player_wins) / len(player_wins)
+        lr = sum(enemy_wins) / len(enemy_wins)
         dr = sum(draws) / len(draws)
 
         print(
             f"PPO  EP {ep:03d} | steps={si.steps:3d} "
-            f"| R={total_r:6.2f} "
-            f"| win={si.player_win} loss={si.enemy_win} draw={si.draw}"
-            f"| last100_wr={wr:.2f} lr={lr:.2f} dr={dr:.2f}"
+            f"| Rp={returns['player']:6.2f} Re={returns['enemy']:6.2f} "
+            f"| player_win={si.player_win} enemy_win={si.enemy_win} draw={si.draw}"
+            f"| last100_pwr={wr:.2f} ewr={lr:.2f} dr={dr:.2f}"
         )
 
 

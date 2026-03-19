@@ -4,7 +4,7 @@
   </a>
 </h1>
 
-<p align="center">Train a PPO agent to battle in a custom grid-based tank environment</p>
+<p align="center">Train a shared-policy PPO tank AI through symmetric self-play in a custom grid environment</p>
 
 <p align="center">
   <img src="https://img.shields.io/github/last-commit/iPelo/Tank-Reinforcement-Learning?style=for-the-badge" alt="Last Commit">
@@ -35,16 +35,16 @@
 
 ## Overview
 
-**Tank-Reinforcement-Learning** is a custom reinforcement learning project where an agent learns to fight an enemy tank in a **15x15 grid world** using **Proximal Policy Optimization (PPO)**.
+**Tank-Reinforcement-Learning** is a custom reinforcement learning project where a shared PPO policy learns to control both tanks in a **15x15 grid world** through self-play.
 
 The project includes:
 
-- A custom `TankEnv` environment with walls, movement, turning, and shooting
+- A symmetric `TankEnv` environment with walls, movement, turning, and shooting
 - A PPO implementation with **GAE**, clipped policy loss, value loss, and entropy bonus
-- A PyTorch **actor-critic** network for policy and value estimation
+- A PyTorch **actor-critic** network shared by both tanks during self-play
 - Optional **Pygame rendering** for watching random or trained agents play
 
-The agent is trained through increasingly difficult phases:
+Training still follows increasingly difficult phases:
 
 - `phase 0`: movement and positioning
 - `phase 1`: combat with shooting enabled
@@ -54,7 +54,7 @@ The agent is trained through increasingly difficult phases:
 
 ## Environment
 
-Each episode takes place in a procedurally generated map with random wall placement while keeping both tanks reachable.
+Each episode takes place in a procedurally generated map with random wall placement while keeping both tanks reachable. Both tanks follow the same rules and receive their own observations and rewards each step.
 
 **Action space (`6` actions):**
 
@@ -109,7 +109,7 @@ Key files:
 - `src/agents/policy.py`: actor-critic policy network
 - `src/training/buffer.py`: rollout buffer and GAE computation
 - `src/training/ppo.py`: PPO update logic
-- `src/scripts/train.py`: training entry point
+- `src/scripts/train.py`: shared-policy self-play training entry point
 - `src/evaluation/eval_match.py`: evaluation and rendering implementation
 - `src/scripts/eval.py`: thin evaluation entry point
 
@@ -141,7 +141,7 @@ pip install -r requirements.txt
 
 ## Training
 
-Train the PPO agent with:
+Train the shared-policy self-play PPO agent with:
 
 ```bash
 python -m src.scripts.train --phase 2
@@ -159,21 +159,22 @@ During training, the script logs:
 
 - update number
 - total environment steps
+- total self-play samples
 - recent mean return
-- win/loss/draw rates
+- player/enemy win rates and draw rate
 - PPO losses and approximate KL
 
 ---
 
 ## Evaluation
 
-Run random-agent evaluation:
+Run random-vs-random evaluation:
 
 ```bash
 python -m src.scripts.eval --episodes 10 --phase 2
 ```
 
-Run a trained model:
+Run a trained shared policy controlling both tanks:
 
 ```bash
 python -m src.scripts.eval --episodes 10 --phase 2 --model src/scripts/models/ppo_phase2_best.pt

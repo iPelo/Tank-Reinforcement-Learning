@@ -6,6 +6,7 @@ from .entities import Action, Direction, StepInfo, Tank, dir_to_vec, turn_left, 
 from .map_gen import generate_walls
 
 Coord = Tuple[int, int]
+AgentId = str
 
 @dataclass
 class EnvState:
@@ -61,7 +62,7 @@ class TankEnv:
                 q.append((nx,ny))
         return  False
 
-    def reset(self, phase: int = 0) -> np.ndarray:
+    def reset(self, phase: int = 0) -> Dict[AgentId, np.ndarray]:
         phase = int(phase)
 
         while True:
@@ -108,16 +109,16 @@ class TankEnv:
         self.last_shot = None
         self.last_shot_ttl = 0
 
-        return self._get_obs()
+        return self.observe_all()
 
-    def step(self,action: int) -> Tuple[np.ndarray, float, bool, Dict]:
+    def step(self, actions: Dict[AgentId, int]) -> Tuple[Dict[AgentId, np.ndarray], Dict[AgentId, float], bool, Dict]:
         if self.state is None:
             raise RuntimeError("Call reset() first.")
 
         s = self.state
         s.steps += 1
-        player_action = Action(int(action))
-        enemy_action = self._enemy_policy()
+        player_action = Action(int(actions["player"]))
+        enemy_action = Action(int(actions["enemy"]))
 
         if self.last_shot_ttl > 0:
             self.last_shot_ttl -= 1
@@ -156,16 +157,22 @@ class TankEnv:
         if s.steps >= self.max_steps:
             done = True
 
-        if player_win:
-            reward = 1.0
-        elif enemy_win:
-            reward = -1.0
-        elif draw:
-            reward = 0.0
-        elif player_action == Action.SHOOT and s.phase >= 1:
-            reward = -0.02
-        else:
-            reward = -0.01
+        rewards = {
+            "player": self._reward_for_side(
+                action=player_action,
+                win=player_win,
+                loss=enemy_win,
+                draw=draw,
+                phase=s.phase,
+            ),
+            "enemy": self._reward_for_side(
+                action=enemy_action,
+                win=enemy_win,
+                loss=player_win,
+                draw=draw,
+                phase=s.phase,
+            ),
+        }
 
         info = StepInfo(
             player_win=player_win,
@@ -180,11 +187,14 @@ class TankEnv:
             self.last_shot = current_shots
             self.last_shot_ttl = 6
 
-        return self._get_obs(), float(reward), bool(done), {
+        return self.observe_all(), rewards, bool(done), {
             "info": info,
             "shot": self.last_shot,
             "shot_ttl": self.last_shot_ttl,
-            "enemy_action": enemy_action,
+            "actions": {
+                "player": player_action,
+                "enemy": enemy_action,
+            },
         }
 
     def _in_bounds(self, x:int,y:int) -> bool:
@@ -311,42 +321,16 @@ class TankEnv:
         right_steps = (int(goal_dir) - int(tank.dir)) % 4
         return Action.LEFT if left_steps <= right_steps else Action.RIGHT
 
-    def _enemy_policy(self) -> Action:
-        assert self.state is not None
-        enemy = self.state.enemy
-        player = self.state.player
-
-        if self.state.phase == 0:
-            return Action.NOOP
-
-        if enemy.cooldown == 0 and self._clear_line((enemy.x, enemy.y), (player.x, player.y)):
-            if enemy.x == player.x:
-                goal_dir = Direction.S if player.y > enemy.y else Direction.N
-            else:
-                goal_dir = Direction.E if player.x > enemy.x else Direction.W
-            if enemy.dir == goal_dir:
-                return Action.SHOOT
-            return self._best_turn_toward(enemy, goal_dir)
-
-        if self.state.phase == 1:
-            return Action.NOOP
-
-        dx = player.x - enemy.x
-        dy = player.y - enemy.y
-
-        if abs(dx) >= abs(dy):
-            goal_dir = Direction.E if dx > 0 else Direction.W
-        else:
-            goal_dir = Direction.S if dy > 0 else Direction.N
-
-        if enemy.dir != goal_dir:
-            return self._best_turn_toward(enemy, goal_dir)
-
-        nx, ny = self._move_target(enemy, True)
-        if (nx, ny) != (player.x, player.y) and not self._is_wall(nx, ny):
-            return Action.FWD
-
-        return Action.LEFT if self.rng.random() < 0.5 else Action.RIGHT
+    def _reward_for_side(self, action: Action, win: bool, loss: bool, draw: bool, phase: int) -> float:
+        if win:
+            return 1.0
+        if loss:
+            return -1.0
+        if draw:
+            return 0.0
+        if action == Action.SHOOT and phase >= 1:
+            return -0.02
+        return -0.01
 
     def _raycast_wall_dist(self, origin: Coord, direction: Coord, limit: int) -> int:
         assert self.state is not None
@@ -381,10 +365,16 @@ class TankEnv:
 
         return -1
 
-    def _get_obs(self) -> np.ndarray:
+    def observe(self, agent_id: AgentId) -> np.ndarray:
         assert self.state is not None
-        t = self.state.player
-        enemy = self.state.enemy
+        if agent_id == "player":
+            t = self.state.player
+            enemy = self.state.enemy
+        elif agent_id == "enemy":
+            t = self.state.enemy
+            enemy = self.state.player
+        else:
+            raise ValueError(f"Unknown agent_id: {agent_id}")
 
         fwd = dir_to_vec(t.dir)
         back = (-fwd[0], -fwd[1])
@@ -419,5 +409,10 @@ class TankEnv:
             dtype=np.float32,
         )
 
+    def observe_all(self) -> Dict[AgentId, np.ndarray]:
+        return {
+            "player": self.observe("player"),
+            "enemy": self.observe("enemy"),
+        }
 
 

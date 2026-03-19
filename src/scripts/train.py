@@ -65,7 +65,9 @@ def parse_args() -> argparse.Namespace:
     return ap.parse_args()
 
 
-def make_algo(device: torch.device, obs_dim: int, act_dim: int) -> tuple[ActorCritic, PPOConfig, PPO, RolloutBuffer]:
+def make_algo(
+    device: torch.device, obs_dim: int, act_dim: int
+) -> tuple[ActorCritic, PPOConfig, PPO, RolloutBuffer, RolloutBuffer, RolloutBuffer]:
     model = ActorCritic(obs_dim=obs_dim, act_dim=act_dim, hidden=128).to(device)
 
     cfg = PPOConfig(
@@ -82,8 +84,34 @@ def make_algo(device: torch.device, obs_dim: int, act_dim: int) -> tuple[ActorCr
     )
 
     algo = PPO(model=model, cfg=cfg, device=device)
-    buf = RolloutBuffer(size=cfg.rollout_steps, obs_dim=obs_dim, device=device)
-    return model, cfg, algo, buf
+    player_buf = RolloutBuffer(size=cfg.rollout_steps, obs_dim=obs_dim, device=device)
+    enemy_buf = RolloutBuffer(size=cfg.rollout_steps, obs_dim=obs_dim, device=device)
+    train_buf = RolloutBuffer(size=cfg.rollout_steps * 2, obs_dim=obs_dim, device=device)
+    return model, cfg, algo, player_buf, enemy_buf, train_buf
+
+
+def merge_self_play_buffers(train_buf: RolloutBuffer, player_buf: RolloutBuffer, enemy_buf: RolloutBuffer) -> None:
+    train_buf.reset()
+    split = player_buf.size
+
+    train_buf.obs[:split] = player_buf.obs
+    train_buf.obs[split:] = enemy_buf.obs
+    train_buf.act[:split] = player_buf.act
+    train_buf.act[split:] = enemy_buf.act
+    train_buf.rew[:split] = player_buf.rew
+    train_buf.rew[split:] = enemy_buf.rew
+    train_buf.done[:split] = player_buf.done
+    train_buf.done[split:] = enemy_buf.done
+    train_buf.logp[:split] = player_buf.logp
+    train_buf.logp[split:] = enemy_buf.logp
+    train_buf.val[:split] = player_buf.val
+    train_buf.val[split:] = enemy_buf.val
+    train_buf.adv[:split] = player_buf.adv
+    train_buf.adv[split:] = enemy_buf.adv
+    train_buf.ret[:split] = player_buf.ret
+    train_buf.ret[split:] = enemy_buf.ret
+    train_buf.ptr = train_buf.size
+    train_buf.full = True
 
 
 def phase_ckpt_path(models_dir: Path, phase: int, suffix: str) -> Path:
@@ -110,12 +138,12 @@ def main() -> None:
     device = torch.device("cpu")
 
     env = TankEnv(w=15, h=15, max_steps=200, seed=0, wall_density=0.12)
-    obs = env.reset(phase=args.phase)
+    obs_by_agent = env.reset(phase=args.phase)
 
-    obs_dim = int(obs.shape[0])
+    obs_dim = int(obs_by_agent["player"].shape[0])
     act_dim = 6
 
-    model, cfg, algo, buf = make_algo(device=device, obs_dim=obs_dim, act_dim=act_dim)
+    model, cfg, algo, player_buf, enemy_buf, train_buf = make_algo(device=device, obs_dim=obs_dim, act_dim=act_dim)
 
     models_dir = Path(__file__).resolve().parent / "models"
     models_dir.mkdir(parents=True, exist_ok=True)
@@ -126,15 +154,15 @@ def main() -> None:
     if args.resume:
         total_updates, resumed_phase = load_ckpt(Path(args.resume), model, device)
         current_phase = resumed_phase
-        obs = env.reset(phase=current_phase)
+        obs_by_agent = env.reset(phase=current_phase)
         print(f"Resumed from {args.resume} at phase={current_phase} after updates={total_updates}")
 
     ep_returns: list[float] = []
-    ep_wins: list[int] = []
-    ep_losses: list[int] = []
+    ep_player_wins: list[int] = []
+    ep_enemy_wins: list[int] = []
     ep_draws: list[int] = []
 
-    ep_ret = 0.0
+    ep_ret = {"player": 0.0, "enemy": 0.0}
     global_step = 0
     phase_updates = 0
     best_wr100 = -1.0
@@ -149,55 +177,81 @@ def main() -> None:
     try:
         while True:
             phase = current_phase
-            buf.reset()
+            player_buf.reset()
+            enemy_buf.reset()
 
             for _ in range(cfg.rollout_steps):
                 global_step += 1
+                sampled_actions: dict[str, int] = {}
+                sampled_logps: dict[str, float] = {}
+                sampled_vals: dict[str, float] = {}
 
-                obs_t = torch.as_tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
-                with torch.no_grad():
-                    action_t, logp_t, val_t = model.act(obs_t)
+                for agent_id in ("player", "enemy"):
+                    obs_t = torch.as_tensor(obs_by_agent[agent_id], dtype=torch.float32, device=device).unsqueeze(0)
+                    with torch.no_grad():
+                        action_t, logp_t, val_t = model.act(obs_t)
 
-                action = int(action_t.item())
-                logp = float(logp_t.item())
-                val = float(val_t.item())
+                    sampled_actions[agent_id] = int(action_t.item())
+                    sampled_logps[agent_id] = float(logp_t.item())
+                    sampled_vals[agent_id] = float(val_t.item())
 
-                next_obs, rew, done, info = env.step(action)
-                buf.add(obs=obs, act=action, rew=rew, done=done, logp=logp, val=val)
+                next_obs_by_agent, rewards, done, info = env.step(sampled_actions)
 
-                ep_ret += float(rew)
-                obs = next_obs
+                player_buf.add(
+                    obs=obs_by_agent["player"],
+                    act=sampled_actions["player"],
+                    rew=rewards["player"],
+                    done=done,
+                    logp=sampled_logps["player"],
+                    val=sampled_vals["player"],
+                )
+                enemy_buf.add(
+                    obs=obs_by_agent["enemy"],
+                    act=sampled_actions["enemy"],
+                    rew=rewards["enemy"],
+                    done=done,
+                    logp=sampled_logps["enemy"],
+                    val=sampled_vals["enemy"],
+                )
+                ep_ret["player"] += float(rewards["player"])
+                ep_ret["enemy"] += float(rewards["enemy"])
+
+                obs_by_agent = next_obs_by_agent
 
                 if done:
                     si = info["info"]
-                    ep_returns.append(ep_ret)
-                    ep_wins.append(int(si.player_win))
-                    ep_losses.append(int(si.enemy_win))
+                    ep_returns.append(0.5 * (ep_ret["player"] + ep_ret["enemy"]))
+                    ep_player_wins.append(int(si.player_win))
+                    ep_enemy_wins.append(int(si.enemy_win))
                     ep_draws.append(int(si.draw))
 
-                    obs = env.reset(phase=phase)
-                    ep_ret = 0.0
+                    obs_by_agent = env.reset(phase=phase)
+                    ep_ret = {"player": 0.0, "enemy": 0.0}
 
-            obs_t = torch.as_tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
-            with torch.no_grad():
-                _, last_val_t = model(obs_t)
-            last_val = float(last_val_t.item())
+            last_values: dict[str, float] = {}
+            for agent_id in ("player", "enemy"):
+                obs_t = torch.as_tensor(obs_by_agent[agent_id], dtype=torch.float32, device=device).unsqueeze(0)
+                with torch.no_grad():
+                    _, last_val_t = model(obs_t)
+                last_values[agent_id] = float(last_val_t.item())
 
-            buf.compute_gae(last_val=last_val, gamma=cfg.gamma, lam=cfg.lam)
+            player_buf.compute_gae(last_val=last_values["player"], gamma=cfg.gamma, lam=cfg.lam)
+            enemy_buf.compute_gae(last_val=last_values["enemy"], gamma=cfg.gamma, lam=cfg.lam)
+            merge_self_play_buffers(train_buf, player_buf, enemy_buf)
 
-            metrics = algo.update(buf)
+            metrics = algo.update(train_buf)
             total_updates += 1
             phase_updates += 1
 
             mean_ret10 = float(np.mean(ep_returns[-10:])) if ep_returns else 0.0
-            wr100 = float(np.mean(ep_wins[-100:])) if ep_wins else 0.0
-            lr100 = float(np.mean(ep_losses[-100:])) if ep_losses else 0.0
+            wr100 = float(np.mean(ep_player_wins[-100:])) if ep_player_wins else 0.0
+            lr100 = float(np.mean(ep_enemy_wins[-100:])) if ep_enemy_wins else 0.0
             dr100 = float(np.mean(ep_draws[-100:])) if ep_draws else 0.0
 
             print(
                 f"phase={phase} upd={total_updates:04d} phase_upd={phase_updates:04d} "
-                f"steps={global_step:07d} mean_ret10={mean_ret10:7.3f} "
-                f"wr100={wr100:5.2f} lr100={lr100:5.2f} dr100={dr100:5.2f} "
+                f"env_steps={global_step:07d} samples={train_buf.ptr:04d} mean_ret10={mean_ret10:7.3f} "
+                f"player_wr100={wr100:5.2f} enemy_wr100={lr100:5.2f} dr100={dr100:5.2f} "
                 f"pi={metrics['pi_loss']:.3f} v={metrics['v_loss']:.3f} "
                 f"ent={metrics['entropy']:.3f} kl={metrics['approx_kl']:.3f}"
             )
@@ -223,11 +277,11 @@ def main() -> None:
                 phase_updates = 0
                 best_wr100 = -1.0
                 ep_returns.clear()
-                ep_wins.clear()
-                ep_losses.clear()
+                ep_player_wins.clear()
+                ep_enemy_wins.clear()
                 ep_draws.clear()
-                ep_ret = 0.0
-                obs = env.reset(phase=current_phase)
+                ep_ret = {"player": 0.0, "enemy": 0.0}
+                obs_by_agent = env.reset(phase=current_phase)
                 print(
                     f"Promoted to phase={current_phase} after "
                     f"phase_updates={completed_phase_updates} total_updates={total_updates} wr100={wr100:.2f}"
