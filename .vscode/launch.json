@@ -12,7 +12,7 @@
       "cwd": "${workspaceFolder}"
     },
     {
-      "name": "Train Self-Play Phase 2",
+      "name": "Train Hidden-Info Phase 2",
       "type": "python",
       "request": "launch",
       "python": "${workspaceFolder}/.venv/bin/python",
@@ -22,7 +22,7 @@
       "cwd": "${workspaceFolder}"
     },
     {
-      "name": "Quick Eval Self-Play",
+      "name": "Quick Eval Hidden-Info",
       "type": "python",
       "request": "launch",
       "python": "${workspaceFolder}/.venv/bin/python",
@@ -32,7 +32,7 @@
       "cwd": "${workspaceFolder}"
     },
     {
-      "name": "Render Eval Self-Play",
+      "name": "Render Eval Hidden-Info",
       "type": "python",
       "request": "launch",
       "python": "${workspaceFolder}/.venv/bin/python",

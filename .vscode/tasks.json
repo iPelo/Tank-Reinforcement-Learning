@@ -12,7 +12,7 @@
       "problemMatcher": []
     },
     {
-      "label": "Train Self-Play Phase 2",
+      "label": "Train Hidden-Info Phase 2",
       "type": "shell",
       "command": "${workspaceFolder}/.venv/bin/python",
       "args": ["-m", "src.scripts.train", "--phase", "2", "--single-phase"],
@@ -22,7 +22,7 @@
       "problemMatcher": []
     },
     {
-      "label": "Quick Eval Self-Play",
+      "label": "Quick Eval Hidden-Info",
       "type": "shell",
       "command": "${workspaceFolder}/.venv/bin/python",
       "args": ["-m", "src.scripts.eval", "--phase", "2", "--episodes", "1"],
@@ -32,7 +32,7 @@
       "problemMatcher": []
     },
     {
-      "label": "Render Eval Self-Play",
+      "label": "Render Eval Hidden-Info",
       "type": "shell",
       "command": "${workspaceFolder}/.venv/bin/python",
       "args": ["-m", "src.scripts.eval", "--phase", "2", "--episodes", "10", "--render"],

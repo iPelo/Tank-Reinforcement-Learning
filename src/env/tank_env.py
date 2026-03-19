@@ -316,6 +316,13 @@ class TankEnv:
 
         return False
 
+    def _is_visible(self, observer: Tank, target: Tank) -> bool:
+        same_row = observer.y == target.y
+        same_col = observer.x == target.x
+        if not same_row and not same_col:
+            return False
+        return self._clear_line((observer.x, observer.y), (target.x, target.y))
+
     def _best_turn_toward(self, tank: Tank, goal_dir: Direction) -> Action:
         left_steps = (int(tank.dir) - int(goal_dir)) % 4
         right_steps = (int(goal_dir) - int(tank.dir)) % 4
@@ -386,7 +393,11 @@ class TankEnv:
         origin = (t.x, t.y)
 
         wall_d = [self._raycast_wall_dist(origin, d, limit) for d in dirs]
-        enemy_d = [self._raycast_enemy_dist(origin, d, limit, enemy) for d in dirs]
+        enemy_visible = self._is_visible(t, enemy)
+        if enemy_visible:
+            enemy_d = [self._raycast_enemy_dist(origin, d, limit, enemy) for d in dirs]
+        else:
+            enemy_d = [-1, -1, -1, -1]
 
         wall_norm = [d / limit for d in wall_d]
         enemy_norm = [(-1.0 if d < 0 else d / limit) for d in enemy_d]
@@ -395,17 +406,28 @@ class TankEnv:
         dir_onehot[int(t.dir)] = 1.0
 
         cd_norm = float(t.cooldown) / float(self.cooldown_steps) if self.cooldown_steps > 0 else 0.0
-        enemy_visible = 1.0 if any(d >= 0 for d in enemy_d) else 0.0
         enemy_has_shot = 0.0
-        if self._clear_line((enemy.x, enemy.y), (t.x, t.y)):
+        if enemy_visible and self._clear_line((enemy.x, enemy.y), (t.x, t.y)):
             if enemy.x == t.x:
                 goal_dir = Direction.S if t.y > enemy.y else Direction.N
             else:
                 goal_dir = Direction.E if t.x > enemy.x else Direction.W
             enemy_has_shot = 1.0 if enemy.dir == goal_dir and enemy.cooldown == 0 else 0.0
 
+        heard_enemy_shot = 0.0
+        if self.last_shot is not None and self.last_shot_ttl > 0:
+            shot_key = "enemy" if agent_id == "player" else "player"
+            heard_enemy_shot = 1.0 if shot_key in self.last_shot else 0.0
+
+        pos_norm = [t.x / max(1, self.w - 1), t.y / max(1, self.h - 1)]
+        step_norm = float(self.state.steps) / float(self.max_steps) if self.max_steps > 0 else 0.0
+
         return np.array(
-            wall_norm + enemy_norm + dir_onehot + [cd_norm, enemy_visible, enemy_has_shot],
+            wall_norm
+            + enemy_norm
+            + dir_onehot
+            + pos_norm
+            + [cd_norm, float(enemy_visible), enemy_has_shot, heard_enemy_shot, step_norm],
             dtype=np.float32,
         )
 
@@ -414,5 +436,4 @@ class TankEnv:
             "player": self.observe("player"),
             "enemy": self.observe("enemy"),
         }
-
 
