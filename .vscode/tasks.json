@@ -2,7 +2,7 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "Train Curriculum",
+      "label": "Train Self-Play Curriculum",
       "type": "shell",
       "command": "${workspaceFolder}/.venv/bin/python",
       "args": ["-m", "src.scripts.train"],
@@ -12,7 +12,7 @@
       "problemMatcher": []
     },
     {
-      "label": "Train Phase 0 Only",
+      "label": "Train Self-Play Phase 0",
       "type": "shell",
       "command": "${workspaceFolder}/.venv/bin/python",
       "args": ["-m", "src.scripts.train", "--phase", "0", "--single-phase"],
@@ -22,17 +22,7 @@
       "problemMatcher": []
     },
     {
-      "label": "Train Phase 1 Only",
-      "type": "shell",
-      "command": "${workspaceFolder}/.venv/bin/python",
-      "args": ["-m", "src.scripts.train", "--phase", "1", "--single-phase"],
-      "options": {
-        "cwd": "${workspaceFolder}"
-      },
-      "problemMatcher": []
-    },
-    {
-      "label": "Train Phase 2 Only",
+      "label": "Train Self-Play Phase 2",
       "type": "shell",
       "command": "${workspaceFolder}/.venv/bin/python",
       "args": ["-m", "src.scripts.train", "--phase", "2", "--single-phase"],
@@ -42,17 +32,7 @@
       "problemMatcher": []
     },
     {
-      "label": "Resume Phase 2 Checkpoint",
-      "type": "shell",
-      "command": "${workspaceFolder}/.venv/bin/python",
-      "args": ["-m", "src.scripts.train", "--resume", "src/scripts/models/ppo_phase2_last.pt"],
-      "options": {
-        "cwd": "${workspaceFolder}"
-      },
-      "problemMatcher": []
-    },
-    {
-      "label": "Eval Random Phase 0",
+      "label": "Eval Random Self-Play Phase 0",
       "type": "shell",
       "command": "${workspaceFolder}/.venv/bin/python",
       "args": ["-m", "src.scripts.eval", "--phase", "0", "--episodes", "10", "--render"],
@@ -62,7 +42,7 @@
       "problemMatcher": []
     },
     {
-      "label": "Eval Random Phase 1",
+      "label": "Eval Random Self-Play Phase 1",
       "type": "shell",
       "command": "${workspaceFolder}/.venv/bin/python",
       "args": ["-m", "src.scripts.eval", "--phase", "1", "--episodes", "10", "--render"],
@@ -72,7 +52,7 @@
       "problemMatcher": []
     },
     {
-      "label": "Eval Random Phase 2",
+      "label": "Eval Random Self-Play Phase 2",
       "type": "shell",
       "command": "${workspaceFolder}/.venv/bin/python",
       "args": ["-m", "src.scripts.eval", "--phase", "2", "--episodes", "10", "--render"],
@@ -82,20 +62,10 @@
       "problemMatcher": []
     },
     {
-      "label": "Eval Saved Model Phase 2",
+      "label": "Quick Eval Self-Play Phase 2",
       "type": "shell",
       "command": "${workspaceFolder}/.venv/bin/python",
-      "args": [
-        "-m",
-        "src.scripts.eval",
-        "--phase",
-        "2",
-        "--episodes",
-        "10",
-        "--render",
-        "--model",
-        "src/scripts/models/ppo_phase2_last.pt"
-      ],
+      "args": ["-m", "src.scripts.eval", "--phase", "2", "--episodes", "1"],
       "options": {
         "cwd": "${workspaceFolder}"
       },
