@@ -12,16 +12,6 @@
       "problemMatcher": []
     },
     {
-      "label": "Train Self-Play Phase 0",
-      "type": "shell",
-      "command": "${workspaceFolder}/.venv/bin/python",
-      "args": ["-m", "src.scripts.train", "--phase", "0", "--single-phase"],
-      "options": {
-        "cwd": "${workspaceFolder}"
-      },
-      "problemMatcher": []
-    },
-    {
       "label": "Train Self-Play Phase 2",
       "type": "shell",
       "command": "${workspaceFolder}/.venv/bin/python",
@@ -32,40 +22,20 @@
       "problemMatcher": []
     },
     {
-      "label": "Eval Random Self-Play Phase 0",
-      "type": "shell",
-      "command": "${workspaceFolder}/.venv/bin/python",
-      "args": ["-m", "src.scripts.eval", "--phase", "0", "--episodes", "10", "--render"],
-      "options": {
-        "cwd": "${workspaceFolder}"
-      },
-      "problemMatcher": []
-    },
-    {
-      "label": "Eval Random Self-Play Phase 1",
-      "type": "shell",
-      "command": "${workspaceFolder}/.venv/bin/python",
-      "args": ["-m", "src.scripts.eval", "--phase", "1", "--episodes", "10", "--render"],
-      "options": {
-        "cwd": "${workspaceFolder}"
-      },
-      "problemMatcher": []
-    },
-    {
-      "label": "Eval Random Self-Play Phase 2",
-      "type": "shell",
-      "command": "${workspaceFolder}/.venv/bin/python",
-      "args": ["-m", "src.scripts.eval", "--phase", "2", "--episodes", "10", "--render"],
-      "options": {
-        "cwd": "${workspaceFolder}"
-      },
-      "problemMatcher": []
-    },
-    {
-      "label": "Quick Eval Self-Play Phase 2",
+      "label": "Quick Eval Self-Play",
       "type": "shell",
       "command": "${workspaceFolder}/.venv/bin/python",
       "args": ["-m", "src.scripts.eval", "--phase", "2", "--episodes", "1"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Render Eval Self-Play",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python",
+      "args": ["-m", "src.scripts.eval", "--phase", "2", "--episodes", "10", "--render"],
       "options": {
         "cwd": "${workspaceFolder}"
       },
