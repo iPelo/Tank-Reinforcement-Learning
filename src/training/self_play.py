@@ -1,6 +1,7 @@
 import argparse
 from dataclasses import asdict
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import torch
@@ -9,6 +10,8 @@ from src.agents.policy import ActorCritic
 from src.env.tank_env import TankEnv
 from src.training.buffer import RolloutBuffer
 from src.training.ppo import PPO, PPOConfig
+
+AGENT_IDS = ("player", "enemy")
 
 
 def save_ckpt(path: Path, model: ActorCritic, obs_dim: int, act_dim: int, updates: int, phase: int) -> None:
@@ -114,6 +117,117 @@ def merge_self_play_buffers(train_buf: RolloutBuffer, player_buf: RolloutBuffer,
     train_buf.full = True
 
 
+class SelfPlayCollector:
+    def __init__(self, model: ActorCritic, device: torch.device, player_buf: RolloutBuffer, enemy_buf: RolloutBuffer) -> None:
+        self.model = model
+        self.device = device
+        self.player_buf = player_buf
+        self.enemy_buf = enemy_buf
+
+    def reset(self) -> None:
+        self.player_buf.reset()
+        self.enemy_buf.reset()
+
+    def sample_actions(self, obs_by_agent: dict[str, np.ndarray]) -> tuple[dict[str, int], dict[str, float], dict[str, float]]:
+        sampled_actions: dict[str, int] = {}
+        sampled_logps: dict[str, float] = {}
+        sampled_vals: dict[str, float] = {}
+
+        for agent_id in AGENT_IDS:
+            obs_t = torch.as_tensor(obs_by_agent[agent_id], dtype=torch.float32, device=self.device).unsqueeze(0)
+            with torch.no_grad():
+                action_t, logp_t, val_t = self.model.act(obs_t)
+
+            sampled_actions[agent_id] = int(action_t.item())
+            sampled_logps[agent_id] = float(logp_t.item())
+            sampled_vals[agent_id] = float(val_t.item())
+
+        return sampled_actions, sampled_logps, sampled_vals
+
+    def store_step(
+        self,
+        obs_by_agent: dict[str, np.ndarray],
+        sampled_actions: dict[str, int],
+        sampled_logps: dict[str, float],
+        sampled_vals: dict[str, float],
+        rewards: dict[str, float],
+        done: bool,
+    ) -> dict[str, float]:
+        self.player_buf.add(
+            obs=obs_by_agent["player"],
+            act=sampled_actions["player"],
+            rew=rewards["player"],
+            done=done,
+            logp=sampled_logps["player"],
+            val=sampled_vals["player"],
+        )
+        self.enemy_buf.add(
+            obs=obs_by_agent["enemy"],
+            act=sampled_actions["enemy"],
+            rew=rewards["enemy"],
+            done=done,
+            logp=sampled_logps["enemy"],
+            val=sampled_vals["enemy"],
+        )
+        return {
+            "player": float(rewards["player"]),
+            "enemy": float(rewards["enemy"]),
+        }
+
+    def bootstrap_values(self, obs_by_agent: dict[str, np.ndarray]) -> dict[str, float]:
+        last_values: dict[str, float] = {}
+        for agent_id in AGENT_IDS:
+            obs_t = torch.as_tensor(obs_by_agent[agent_id], dtype=torch.float32, device=self.device).unsqueeze(0)
+            with torch.no_grad():
+                _, last_val_t = self.model(obs_t)
+            last_values[agent_id] = float(last_val_t.item())
+        return last_values
+
+    def finalize_rollouts(self, train_buf: RolloutBuffer, gamma: float, lam: float, obs_by_agent: dict[str, np.ndarray]) -> None:
+        last_values = self.bootstrap_values(obs_by_agent)
+        self.player_buf.compute_gae(last_val=last_values["player"], gamma=gamma, lam=lam)
+        self.enemy_buf.compute_gae(last_val=last_values["enemy"], gamma=gamma, lam=lam)
+        merge_self_play_buffers(train_buf, self.player_buf, self.enemy_buf)
+
+
+def run_rollout(
+    env: TankEnv,
+    collector: SelfPlayCollector,
+    cfg: PPOConfig,
+    obs_by_agent: dict[str, np.ndarray],
+    global_step: int,
+    episode_returns: dict[str, float],
+    episode_stats: dict[str, list[float] | list[int]],
+    phase: int,
+) -> tuple[dict[str, np.ndarray], int, dict[str, float]]:
+    for _ in range(cfg.rollout_steps):
+        global_step += 1
+        sampled_actions, sampled_logps, sampled_vals = collector.sample_actions(obs_by_agent)
+        next_obs_by_agent, rewards, done, info = env.step(sampled_actions)
+        reward_delta = collector.store_step(
+            obs_by_agent=obs_by_agent,
+            sampled_actions=sampled_actions,
+            sampled_logps=sampled_logps,
+            sampled_vals=sampled_vals,
+            rewards=rewards,
+            done=done,
+        )
+        episode_returns["player"] += reward_delta["player"]
+        episode_returns["enemy"] += reward_delta["enemy"]
+        obs_by_agent = next_obs_by_agent
+
+        if done:
+            si = info["info"]
+            episode_stats["returns"].append(0.5 * (episode_returns["player"] + episode_returns["enemy"]))
+            episode_stats["player_wins"].append(int(si.player_win))
+            episode_stats["enemy_wins"].append(int(si.enemy_win))
+            episode_stats["draws"].append(int(si.draw))
+            obs_by_agent = env.reset(phase=phase)
+            episode_returns = {"player": 0.0, "enemy": 0.0}
+
+    return obs_by_agent, global_step, episode_returns
+
+
 def phase_ckpt_path(models_dir: Path, phase: int, suffix: str) -> Path:
     return models_dir / f"ppo_phase{phase}_{suffix}.pt"
 
@@ -143,6 +257,7 @@ def run_training(args: argparse.Namespace) -> None:
     act_dim = 6
 
     model, cfg, algo, player_buf, enemy_buf, train_buf = make_algo(device=device, obs_dim=obs_dim, act_dim=act_dim)
+    collector = SelfPlayCollector(model=model, device=device, player_buf=player_buf, enemy_buf=enemy_buf)
 
     models_dir = Path(__file__).resolve().parent.parent / "scripts" / "models"
     models_dir.mkdir(parents=True, exist_ok=True)
@@ -156,10 +271,12 @@ def run_training(args: argparse.Namespace) -> None:
         obs_by_agent = env.reset(phase=current_phase)
         print(f"Resumed from {args.resume} at phase={current_phase} after updates={total_updates}")
 
-    ep_returns: list[float] = []
-    ep_player_wins: list[int] = []
-    ep_enemy_wins: list[int] = []
-    ep_draws: list[int] = []
+    episode_stats: dict[str, list[Any]] = {
+        "returns": [],
+        "player_wins": [],
+        "enemy_wins": [],
+        "draws": [],
+    }
 
     ep_ret = {"player": 0.0, "enemy": 0.0}
     global_step = 0
@@ -176,76 +293,27 @@ def run_training(args: argparse.Namespace) -> None:
     try:
         while True:
             phase = current_phase
-            player_buf.reset()
-            enemy_buf.reset()
-
-            for _ in range(cfg.rollout_steps):
-                global_step += 1
-                sampled_actions: dict[str, int] = {}
-                sampled_logps: dict[str, float] = {}
-                sampled_vals: dict[str, float] = {}
-
-                for agent_id in ("player", "enemy"):
-                    obs_t = torch.as_tensor(obs_by_agent[agent_id], dtype=torch.float32, device=device).unsqueeze(0)
-                    with torch.no_grad():
-                        action_t, logp_t, val_t = model.act(obs_t)
-
-                    sampled_actions[agent_id] = int(action_t.item())
-                    sampled_logps[agent_id] = float(logp_t.item())
-                    sampled_vals[agent_id] = float(val_t.item())
-
-                next_obs_by_agent, rewards, done, info = env.step(sampled_actions)
-
-                player_buf.add(
-                    obs=obs_by_agent["player"],
-                    act=sampled_actions["player"],
-                    rew=rewards["player"],
-                    done=done,
-                    logp=sampled_logps["player"],
-                    val=sampled_vals["player"],
-                )
-                enemy_buf.add(
-                    obs=obs_by_agent["enemy"],
-                    act=sampled_actions["enemy"],
-                    rew=rewards["enemy"],
-                    done=done,
-                    logp=sampled_logps["enemy"],
-                    val=sampled_vals["enemy"],
-                )
-                ep_ret["player"] += float(rewards["player"])
-                ep_ret["enemy"] += float(rewards["enemy"])
-
-                obs_by_agent = next_obs_by_agent
-
-                if done:
-                    si = info["info"]
-                    ep_returns.append(0.5 * (ep_ret["player"] + ep_ret["enemy"]))
-                    ep_player_wins.append(int(si.player_win))
-                    ep_enemy_wins.append(int(si.enemy_win))
-                    ep_draws.append(int(si.draw))
-
-                    obs_by_agent = env.reset(phase=phase)
-                    ep_ret = {"player": 0.0, "enemy": 0.0}
-
-            last_values: dict[str, float] = {}
-            for agent_id in ("player", "enemy"):
-                obs_t = torch.as_tensor(obs_by_agent[agent_id], dtype=torch.float32, device=device).unsqueeze(0)
-                with torch.no_grad():
-                    _, last_val_t = model(obs_t)
-                last_values[agent_id] = float(last_val_t.item())
-
-            player_buf.compute_gae(last_val=last_values["player"], gamma=cfg.gamma, lam=cfg.lam)
-            enemy_buf.compute_gae(last_val=last_values["enemy"], gamma=cfg.gamma, lam=cfg.lam)
-            merge_self_play_buffers(train_buf, player_buf, enemy_buf)
+            collector.reset()
+            obs_by_agent, global_step, ep_ret = run_rollout(
+                env=env,
+                collector=collector,
+                cfg=cfg,
+                obs_by_agent=obs_by_agent,
+                global_step=global_step,
+                episode_returns=ep_ret,
+                episode_stats=episode_stats,
+                phase=phase,
+            )
+            collector.finalize_rollouts(train_buf=train_buf, gamma=cfg.gamma, lam=cfg.lam, obs_by_agent=obs_by_agent)
 
             metrics = algo.update(train_buf)
             total_updates += 1
             phase_updates += 1
 
-            mean_ret10 = float(np.mean(ep_returns[-10:])) if ep_returns else 0.0
-            wr100 = float(np.mean(ep_player_wins[-100:])) if ep_player_wins else 0.0
-            lr100 = float(np.mean(ep_enemy_wins[-100:])) if ep_enemy_wins else 0.0
-            dr100 = float(np.mean(ep_draws[-100:])) if ep_draws else 0.0
+            mean_ret10 = float(np.mean(episode_stats["returns"][-10:])) if episode_stats["returns"] else 0.0
+            wr100 = float(np.mean(episode_stats["player_wins"][-100:])) if episode_stats["player_wins"] else 0.0
+            lr100 = float(np.mean(episode_stats["enemy_wins"][-100:])) if episode_stats["enemy_wins"] else 0.0
+            dr100 = float(np.mean(episode_stats["draws"][-100:])) if episode_stats["draws"] else 0.0
 
             print(
                 f"phase={phase} upd={total_updates:04d} phase_upd={phase_updates:04d} "
@@ -275,10 +343,8 @@ def run_training(args: argparse.Namespace) -> None:
                 current_phase += 1
                 phase_updates = 0
                 best_wr100 = -1.0
-                ep_returns.clear()
-                ep_player_wins.clear()
-                ep_enemy_wins.clear()
-                ep_draws.clear()
+                for values in episode_stats.values():
+                    values.clear()
                 ep_ret = {"player": 0.0, "enemy": 0.0}
                 obs_by_agent = env.reset(phase=current_phase)
                 print(
@@ -309,7 +375,9 @@ __all__ = [
     "merge_self_play_buffers",
     "parse_args",
     "phase_ckpt_path",
+    "run_rollout",
     "run_training",
     "save_ckpt",
+    "SelfPlayCollector",
     "should_advance_phase",
 ]
