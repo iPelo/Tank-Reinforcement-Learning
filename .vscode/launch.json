@@ -40,6 +40,25 @@
       "args": ["--phase", "2", "--episodes", "10", "--render"],
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Checkpoint Match Eval",
+      "type": "python",
+      "request": "launch",
+      "python": "${workspaceFolder}/.venv/bin/python",
+      "module": "src.scripts.match_eval",
+      "args": [
+        "--player-model",
+        "src/scripts/models/ppo_phase2_last.pt",
+        "--enemy-model",
+        "src/scripts/models/ppo_phase2_last.pt",
+        "--phase",
+        "2",
+        "--episodes",
+        "10"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}"
     }
   ]
 }

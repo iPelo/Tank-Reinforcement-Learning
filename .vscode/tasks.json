@@ -40,6 +40,27 @@
         "cwd": "${workspaceFolder}"
       },
       "problemMatcher": []
+    },
+    {
+      "label": "Checkpoint Match Eval",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python",
+      "args": [
+        "-m",
+        "src.scripts.match_eval",
+        "--player-model",
+        "src/scripts/models/ppo_phase2_last.pt",
+        "--enemy-model",
+        "src/scripts/models/ppo_phase2_last.pt",
+        "--phase",
+        "2",
+        "--episodes",
+        "10"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
     }
   ]
 }
