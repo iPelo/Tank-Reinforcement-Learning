@@ -95,6 +95,12 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="Optional frozen opponent checkpoint. When set, the player policy trains against a fixed enemy policy.",
     )
+    ap.add_argument(
+        "--snapshot-interval",
+        type=int,
+        default=10,
+        help="Save a historical checkpoint to the opponent pool every N updates. Set to 0 to disable.",
+    )
     return ap.parse_args()
 
 
@@ -297,6 +303,30 @@ def phase_ckpt_path(models_dir: Path, phase: int, suffix: str) -> Path:
     return models_dir / f"ppo_phase{phase}_{suffix}.pt"
 
 
+def opponent_pool_dir(models_dir: Path, phase: int) -> Path:
+    return models_dir / "opponent_pool" / f"phase_{phase}"
+
+
+def opponent_snapshot_path(models_dir: Path, phase: int, updates: int) -> Path:
+    return opponent_pool_dir(models_dir, phase) / f"ppo_phase{phase}_upd{updates:06d}.pt"
+
+
+def save_opponent_snapshot(
+    models_dir: Path,
+    model: ActorCritic,
+    obs_dim: int,
+    act_dim: int,
+    updates: int,
+    phase: int,
+    cfg: PPOConfig | None = None,
+) -> Path:
+    pool_dir = opponent_pool_dir(models_dir, phase)
+    pool_dir.mkdir(parents=True, exist_ok=True)
+    snapshot_path = opponent_snapshot_path(models_dir, phase, updates)
+    save_ckpt(snapshot_path, model, obs_dim, act_dim, updates, phase, cfg=cfg)
+    return snapshot_path
+
+
 def should_advance_phase(
     phase: int,
     single_phase: bool,
@@ -378,7 +408,8 @@ def run_training(args: argparse.Namespace) -> None:
         f"Training mode: {'single phase' if args.single_phase else 'curriculum'} | "
         f"start_phase={current_phase} | advance_win_rate={args.advance_win_rate:.2f} | "
         f"min_updates_per_phase={args.min_updates_per_phase} | "
-        f"opponent={'self_play' if train_both_sides else opponent_label}"
+        f"opponent={'self_play' if train_both_sides else opponent_label} | "
+        f"snapshot_interval={args.snapshot_interval}"
     )
 
     try:
@@ -424,6 +455,19 @@ def run_training(args: argparse.Namespace) -> None:
                     phase,
                     cfg=cfg,
                 )
+
+            # Keep a time-ordered pool of older policies for future opponent sampling.
+            if args.snapshot_interval > 0 and total_updates % args.snapshot_interval == 0:
+                snapshot_path = save_opponent_snapshot(
+                    models_dir=models_dir,
+                    model=model,
+                    obs_dim=obs_dim,
+                    act_dim=act_dim,
+                    updates=total_updates,
+                    phase=phase,
+                    cfg=cfg,
+                )
+                print(f"Saved opponent snapshot {snapshot_path}")
 
             if wr100 > best_wr100:
                 best_wr100 = wr100
@@ -491,11 +535,14 @@ __all__ = [
     "main",
     "make_algo",
     "merge_self_play_buffers",
+    "opponent_pool_dir",
+    "opponent_snapshot_path",
     "parse_args",
     "phase_ckpt_path",
     "run_rollout",
     "run_training",
     "save_ckpt",
+    "save_opponent_snapshot",
     "SelfPlayCollector",
     "should_advance_phase",
 ]
