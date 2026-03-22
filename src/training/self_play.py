@@ -296,6 +296,8 @@ def run_rollout(
         if done:
             si = info["info"]
             episode_stats["returns"].append(0.5 * (episode_returns["player"] + episode_returns["enemy"]))
+            episode_stats["player_returns"].append(episode_returns["player"])
+            episode_stats["enemy_returns"].append(episode_returns["enemy"])
             episode_stats["player_wins"].append(int(si.player_win))
             episode_stats["enemy_wins"].append(int(si.enemy_win))
             episode_stats["draws"].append(int(si.draw))
@@ -390,6 +392,14 @@ def maybe_make_pool_opponent_runner(
     return PolicyRunner(model=opponent_model, device=device), label
 
 
+def classify_opponent_label(label: str) -> str:
+    if label == "current_policy":
+        return "self_play"
+    if label.endswith(".pt") or ".pt (" in label:
+        return "frozen"
+    return "other"
+
+
 def run_training(args: argparse.Namespace) -> None:
     device = torch.device("cpu")
     rng = np.random.default_rng(0)
@@ -438,6 +448,9 @@ def run_training(args: argparse.Namespace) -> None:
         "player_wins": [],
         "enemy_wins": [],
         "draws": [],
+        "player_returns": [],
+        "enemy_returns": [],
+        "opponent_types": [],
     }
 
     ep_ret = {"player": 0.0, "enemy": 0.0}
@@ -489,6 +502,8 @@ def run_training(args: argparse.Namespace) -> None:
                 train_both_sides=round_train_both_sides,
             )
             collector.reset()
+            # Record which opponent regime drove this update so training logs show actual league mix.
+            episode_stats["opponent_types"].append(classify_opponent_label(round_opponent_label))
             obs_by_agent, global_step, ep_ret = run_rollout(
                 env=env,
                 collector=collector,
@@ -509,11 +524,26 @@ def run_training(args: argparse.Namespace) -> None:
             wr100 = float(np.mean(episode_stats["player_wins"][-100:])) if episode_stats["player_wins"] else 0.0
             lr100 = float(np.mean(episode_stats["enemy_wins"][-100:])) if episode_stats["enemy_wins"] else 0.0
             dr100 = float(np.mean(episode_stats["draws"][-100:])) if episode_stats["draws"] else 0.0
+            player_ret10 = float(np.mean(episode_stats["player_returns"][-10:])) if episode_stats["player_returns"] else 0.0
+            enemy_ret10 = float(np.mean(episode_stats["enemy_returns"][-10:])) if episode_stats["enemy_returns"] else 0.0
+            recent_opponents = episode_stats["opponent_types"][-20:]
+            self_play_rate20 = (
+                sum(1 for value in recent_opponents if value == "self_play") / len(recent_opponents)
+                if recent_opponents
+                else 0.0
+            )
+            frozen_rate20 = (
+                sum(1 for value in recent_opponents if value == "frozen") / len(recent_opponents)
+                if recent_opponents
+                else 0.0
+            )
 
             print(
                 f"phase={phase} upd={total_updates:04d} phase_upd={phase_updates:04d} "
                 f"env_steps={global_step:07d} samples={train_buf.ptr:04d} mean_ret10={mean_ret10:7.3f} "
+                f"player_ret10={player_ret10:7.3f} enemy_ret10={enemy_ret10:7.3f} "
                 f"player_wr100={wr100:5.2f} enemy_wr100={lr100:5.2f} dr100={dr100:5.2f} "
+                f"self_play_rate20={self_play_rate20:4.2f} frozen_rate20={frozen_rate20:4.2f} "
                 f"opp={round_opponent_label} "
                 f"pi={metrics['pi_loss']:.3f} v={metrics['v_loss']:.3f} "
                 f"ent={metrics['entropy']:.3f} kl={metrics['approx_kl']:.3f}"
