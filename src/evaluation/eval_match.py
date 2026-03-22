@@ -65,10 +65,19 @@ def run_model(env: TankEnv, renderer: PygameRenderer | None, episodes: int, mode
 
     obs_dim = int(ckpt["obs_dim"])
     act_dim = int(ckpt["act_dim"])
+    training_mode = ckpt.get("training_mode", "unknown")
+    checkpoint_version = ckpt.get("checkpoint_version", 1)
+    policy_type = ckpt.get("policy_type", "unknown")
 
     model = ActorCritic(obs_dim=obs_dim, act_dim=act_dim, hidden=128).to(device)
     model.load_state_dict(ckpt["model"])
     model.eval()
+
+    print(
+        f"Loaded checkpoint: mode={training_mode} policy={policy_type} "
+        f"phase={ckpt.get('phase', phase)} updates={ckpt.get('updates', 0)} "
+        f"ckpt_v={checkpoint_version}"
+    )
 
     player_wins: list[int] = []
     enemy_wins: list[int] = []

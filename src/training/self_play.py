@@ -12,25 +12,49 @@ from src.training.buffer import RolloutBuffer
 from src.training.ppo import PPO, PPOConfig
 
 AGENT_IDS = ("player", "enemy")
+CHECKPOINT_VERSION = 2
 
 
-def save_ckpt(path: Path, model: ActorCritic, obs_dim: int, act_dim: int, updates: int, phase: int) -> None:
-    torch.save(
-        {
-            "model": model.state_dict(),
-            "obs_dim": obs_dim,
-            "act_dim": act_dim,
-            "updates": updates,
-            "phase": phase,
-        },
-        path,
-    )
+def build_ckpt_payload(
+    model: ActorCritic,
+    obs_dim: int,
+    act_dim: int,
+    updates: int,
+    phase: int,
+    cfg: PPOConfig | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "checkpoint_version": CHECKPOINT_VERSION,
+        "training_mode": "self_play",
+        "policy_type": "shared_policy",
+        "agent_ids": list(AGENT_IDS),
+        "model": model.state_dict(),
+        "obs_dim": obs_dim,
+        "act_dim": act_dim,
+        "updates": updates,
+        "phase": phase,
+    }
+    if cfg is not None:
+        payload["ppo_config"] = asdict(cfg)
+    return payload
 
 
-def load_ckpt(path: Path, model: ActorCritic, device: torch.device) -> tuple[int, int]:
+def save_ckpt(
+    path: Path,
+    model: ActorCritic,
+    obs_dim: int,
+    act_dim: int,
+    updates: int,
+    phase: int,
+    cfg: PPOConfig | None = None,
+) -> None:
+    torch.save(build_ckpt_payload(model=model, obs_dim=obs_dim, act_dim=act_dim, updates=updates, phase=phase, cfg=cfg), path)
+
+
+def load_ckpt(path: Path, model: ActorCritic, device: torch.device) -> tuple[int, int, dict[str, Any]]:
     ckpt = torch.load(path, map_location=device)
     model.load_state_dict(ckpt["model"])
-    return int(ckpt.get("updates", 0)), int(ckpt.get("phase", 0))
+    return int(ckpt.get("updates", 0)), int(ckpt.get("phase", 0)), ckpt
 
 
 def parse_args() -> argparse.Namespace:
@@ -266,10 +290,15 @@ def run_training(args: argparse.Namespace) -> None:
     total_updates = 0
 
     if args.resume:
-        total_updates, resumed_phase = load_ckpt(Path(args.resume), model, device)
+        total_updates, resumed_phase, ckpt = load_ckpt(Path(args.resume), model, device)
         current_phase = resumed_phase
         obs_by_agent = env.reset(phase=current_phase)
-        print(f"Resumed from {args.resume} at phase={current_phase} after updates={total_updates}")
+        training_mode = ckpt.get("training_mode", "unknown")
+        version = ckpt.get("checkpoint_version", 1)
+        print(
+            f"Resumed from {args.resume} at phase={current_phase} after updates={total_updates} "
+            f"(mode={training_mode}, ckpt_v={version})"
+        )
 
     episode_stats: dict[str, list[Any]] = {
         "returns": [],
@@ -324,11 +353,27 @@ def run_training(args: argparse.Namespace) -> None:
             )
 
             if total_updates % 5 == 0:
-                save_ckpt(phase_ckpt_path(models_dir, phase, "last"), model, obs_dim, act_dim, total_updates, phase)
+                save_ckpt(
+                    phase_ckpt_path(models_dir, phase, "last"),
+                    model,
+                    obs_dim,
+                    act_dim,
+                    total_updates,
+                    phase,
+                    cfg=cfg,
+                )
 
             if wr100 > best_wr100:
                 best_wr100 = wr100
-                save_ckpt(phase_ckpt_path(models_dir, phase, "best"), model, obs_dim, act_dim, total_updates, phase)
+                save_ckpt(
+                    phase_ckpt_path(models_dir, phase, "best"),
+                    model,
+                    obs_dim,
+                    act_dim,
+                    total_updates,
+                    phase,
+                    cfg=cfg,
+                )
 
             if should_advance_phase(
                 phase=phase,
@@ -339,7 +384,15 @@ def run_training(args: argparse.Namespace) -> None:
                 advance_win_rate=args.advance_win_rate,
             ):
                 completed_phase_updates = phase_updates
-                save_ckpt(phase_ckpt_path(models_dir, phase, "last"), model, obs_dim, act_dim, total_updates, phase)
+                save_ckpt(
+                    phase_ckpt_path(models_dir, phase, "last"),
+                    model,
+                    obs_dim,
+                    act_dim,
+                    total_updates,
+                    phase,
+                    cfg=cfg,
+                )
                 current_phase += 1
                 phase_updates = 0
                 best_wr100 = -1.0
@@ -360,6 +413,7 @@ def run_training(args: argparse.Namespace) -> None:
             act_dim,
             total_updates,
             current_phase,
+            cfg=cfg,
         )
         print(f"Saved {phase_ckpt_path(models_dir, current_phase, 'last')}")
 
@@ -369,6 +423,8 @@ def main() -> None:
 
 
 __all__ = [
+    "build_ckpt_payload",
+    "CHECKPOINT_VERSION",
     "load_ckpt",
     "main",
     "make_algo",
