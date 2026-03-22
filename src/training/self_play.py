@@ -89,6 +89,12 @@ def parse_args() -> argparse.Namespace:
         default=0.70,
         help="Rolling win-rate threshold used to unlock the next phase.",
     )
+    ap.add_argument(
+        "--opponent-checkpoint",
+        type=str,
+        default="",
+        help="Optional frozen opponent checkpoint. When set, the player policy trains against a fixed enemy policy.",
+    )
     return ap.parse_args()
 
 
@@ -141,32 +147,66 @@ def merge_self_play_buffers(train_buf: RolloutBuffer, player_buf: RolloutBuffer,
     train_buf.full = True
 
 
-class SelfPlayCollector:
-    def __init__(self, model: ActorCritic, device: torch.device, player_buf: RolloutBuffer, enemy_buf: RolloutBuffer) -> None:
+def copy_buffer(dst_buf: RolloutBuffer, src_buf: RolloutBuffer) -> None:
+    dst_buf.reset()
+    size = src_buf.size
+    dst_buf.obs[:size] = src_buf.obs
+    dst_buf.act[:size] = src_buf.act
+    dst_buf.rew[:size] = src_buf.rew
+    dst_buf.done[:size] = src_buf.done
+    dst_buf.logp[:size] = src_buf.logp
+    dst_buf.val[:size] = src_buf.val
+    dst_buf.adv[:size] = src_buf.adv
+    dst_buf.ret[:size] = src_buf.ret
+    dst_buf.ptr = size
+    dst_buf.full = True
+
+
+class PolicyRunner:
+    def __init__(self, model: ActorCritic, device: torch.device) -> None:
         self.model = model
         self.device = device
+
+    def sample(self, obs: np.ndarray) -> tuple[int, float, float]:
+        obs_t = torch.as_tensor(obs, dtype=torch.float32, device=self.device).unsqueeze(0)
+        with torch.no_grad():
+            action_t, logp_t, val_t = self.model.act(obs_t)
+        return int(action_t.item()), float(logp_t.item()), float(val_t.item())
+
+    def value(self, obs: np.ndarray) -> float:
+        obs_t = torch.as_tensor(obs, dtype=torch.float32, device=self.device).unsqueeze(0)
+        with torch.no_grad():
+            _, val_t = self.model(obs_t)
+        return float(val_t.item())
+
+
+class SelfPlayCollector:
+    def __init__(
+        self,
+        learner_runner: PolicyRunner,
+        opponent_runner: PolicyRunner,
+        player_buf: RolloutBuffer,
+        enemy_buf: RolloutBuffer,
+        train_both_sides: bool,
+    ) -> None:
+        self.learner_runner = learner_runner
+        self.opponent_runner = opponent_runner
         self.player_buf = player_buf
         self.enemy_buf = enemy_buf
+        self.train_both_sides = train_both_sides
 
     def reset(self) -> None:
         self.player_buf.reset()
         self.enemy_buf.reset()
 
     def sample_actions(self, obs_by_agent: dict[str, np.ndarray]) -> tuple[dict[str, int], dict[str, float], dict[str, float]]:
-        sampled_actions: dict[str, int] = {}
-        sampled_logps: dict[str, float] = {}
-        sampled_vals: dict[str, float] = {}
-
-        for agent_id in AGENT_IDS:
-            obs_t = torch.as_tensor(obs_by_agent[agent_id], dtype=torch.float32, device=self.device).unsqueeze(0)
-            with torch.no_grad():
-                action_t, logp_t, val_t = self.model.act(obs_t)
-
-            sampled_actions[agent_id] = int(action_t.item())
-            sampled_logps[agent_id] = float(logp_t.item())
-            sampled_vals[agent_id] = float(val_t.item())
-
-        return sampled_actions, sampled_logps, sampled_vals
+        player_action, player_logp, player_val = self.learner_runner.sample(obs_by_agent["player"])
+        enemy_action, enemy_logp, enemy_val = self.opponent_runner.sample(obs_by_agent["enemy"])
+        return (
+            {"player": player_action, "enemy": enemy_action},
+            {"player": player_logp, "enemy": enemy_logp},
+            {"player": player_val, "enemy": enemy_val},
+        )
 
     def store_step(
         self,
@@ -185,33 +225,34 @@ class SelfPlayCollector:
             logp=sampled_logps["player"],
             val=sampled_vals["player"],
         )
-        self.enemy_buf.add(
-            obs=obs_by_agent["enemy"],
-            act=sampled_actions["enemy"],
-            rew=rewards["enemy"],
-            done=done,
-            logp=sampled_logps["enemy"],
-            val=sampled_vals["enemy"],
-        )
+        if self.train_both_sides:
+            self.enemy_buf.add(
+                obs=obs_by_agent["enemy"],
+                act=sampled_actions["enemy"],
+                rew=rewards["enemy"],
+                done=done,
+                logp=sampled_logps["enemy"],
+                val=sampled_vals["enemy"],
+            )
         return {
             "player": float(rewards["player"]),
             "enemy": float(rewards["enemy"]),
         }
 
     def bootstrap_values(self, obs_by_agent: dict[str, np.ndarray]) -> dict[str, float]:
-        last_values: dict[str, float] = {}
-        for agent_id in AGENT_IDS:
-            obs_t = torch.as_tensor(obs_by_agent[agent_id], dtype=torch.float32, device=self.device).unsqueeze(0)
-            with torch.no_grad():
-                _, last_val_t = self.model(obs_t)
-            last_values[agent_id] = float(last_val_t.item())
+        last_values = {"player": self.learner_runner.value(obs_by_agent["player"])}
+        if self.train_both_sides:
+            last_values["enemy"] = self.opponent_runner.value(obs_by_agent["enemy"])
         return last_values
 
     def finalize_rollouts(self, train_buf: RolloutBuffer, gamma: float, lam: float, obs_by_agent: dict[str, np.ndarray]) -> None:
         last_values = self.bootstrap_values(obs_by_agent)
         self.player_buf.compute_gae(last_val=last_values["player"], gamma=gamma, lam=lam)
-        self.enemy_buf.compute_gae(last_val=last_values["enemy"], gamma=gamma, lam=lam)
-        merge_self_play_buffers(train_buf, self.player_buf, self.enemy_buf)
+        if self.train_both_sides:
+            self.enemy_buf.compute_gae(last_val=last_values["enemy"], gamma=gamma, lam=lam)
+            merge_self_play_buffers(train_buf, self.player_buf, self.enemy_buf)
+        else:
+            copy_buffer(train_buf, self.player_buf)
 
 
 def run_rollout(
@@ -281,7 +322,27 @@ def run_training(args: argparse.Namespace) -> None:
     act_dim = 6
 
     model, cfg, algo, player_buf, enemy_buf, train_buf = make_algo(device=device, obs_dim=obs_dim, act_dim=act_dim)
-    collector = SelfPlayCollector(model=model, device=device, player_buf=player_buf, enemy_buf=enemy_buf)
+    learner_runner = PolicyRunner(model=model, device=device)
+    train_both_sides = not bool(args.opponent_checkpoint)
+    opponent_model: ActorCritic | None = None
+    opponent_label = "current_policy"
+    if args.opponent_checkpoint:
+        opponent_model = ActorCritic(obs_dim=obs_dim, act_dim=act_dim, hidden=128).to(device)
+        _, _, opponent_ckpt = load_ckpt(Path(args.opponent_checkpoint), opponent_model, device)
+        opponent_model.eval()
+        opponent_label = Path(args.opponent_checkpoint).name
+        print(
+            f"Loaded frozen opponent from {args.opponent_checkpoint} "
+            f"(mode={opponent_ckpt.get('training_mode', 'unknown')}, ckpt_v={opponent_ckpt.get('checkpoint_version', 1)})"
+        )
+    opponent_runner = PolicyRunner(model=opponent_model or model, device=device)
+    collector = SelfPlayCollector(
+        learner_runner=learner_runner,
+        opponent_runner=opponent_runner,
+        player_buf=player_buf,
+        enemy_buf=enemy_buf,
+        train_both_sides=train_both_sides,
+    )
 
     models_dir = Path(__file__).resolve().parent.parent / "scripts" / "models"
     models_dir.mkdir(parents=True, exist_ok=True)
@@ -316,7 +377,8 @@ def run_training(args: argparse.Namespace) -> None:
     print(
         f"Training mode: {'single phase' if args.single_phase else 'curriculum'} | "
         f"start_phase={current_phase} | advance_win_rate={args.advance_win_rate:.2f} | "
-        f"min_updates_per_phase={args.min_updates_per_phase}"
+        f"min_updates_per_phase={args.min_updates_per_phase} | "
+        f"opponent={'self_play' if train_both_sides else opponent_label}"
     )
 
     try:
