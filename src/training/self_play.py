@@ -101,6 +101,12 @@ def parse_args() -> argparse.Namespace:
         default=10,
         help="Save a historical checkpoint to the opponent pool every N updates. Set to 0 to disable.",
     )
+    ap.add_argument(
+        "--pool-opponent-prob",
+        type=float,
+        default=0.5,
+        help="Probability of sampling a frozen opponent from the pool instead of using current-policy self-play.",
+    )
     return ap.parse_args()
 
 
@@ -327,6 +333,21 @@ def save_opponent_snapshot(
     return snapshot_path
 
 
+def list_opponent_snapshots(models_dir: Path, phase: int) -> list[Path]:
+    pool_dir = opponent_pool_dir(models_dir, phase)
+    if not pool_dir.exists():
+        return []
+    return sorted(path for path in pool_dir.glob("*.pt") if path.is_file())
+
+
+def sample_opponent_snapshot(models_dir: Path, phase: int, rng: np.random.Generator) -> Path | None:
+    snapshots = list_opponent_snapshots(models_dir, phase)
+    if not snapshots:
+        return None
+    idx = int(rng.integers(0, len(snapshots)))
+    return snapshots[idx]
+
+
 def should_advance_phase(
     phase: int,
     single_phase: bool,
@@ -342,8 +363,36 @@ def should_advance_phase(
     return win_rate >= advance_win_rate
 
 
+def maybe_make_pool_opponent_runner(
+    args: argparse.Namespace,
+    models_dir: Path,
+    phase: int,
+    obs_dim: int,
+    act_dim: int,
+    device: torch.device,
+    rng: np.random.Generator,
+) -> tuple[PolicyRunner | None, str | None]:
+    if args.opponent_checkpoint:
+        return None, None
+    if args.pool_opponent_prob <= 0.0:
+        return None, None
+    if rng.random() >= args.pool_opponent_prob:
+        return None, None
+
+    snapshot_path = sample_opponent_snapshot(models_dir, phase, rng)
+    if snapshot_path is None:
+        return None, None
+
+    opponent_model = ActorCritic(obs_dim=obs_dim, act_dim=act_dim, hidden=128).to(device)
+    _, _, opponent_ckpt = load_ckpt(snapshot_path, opponent_model, device)
+    opponent_model.eval()
+    label = f"{snapshot_path.name} (ckpt_v={opponent_ckpt.get('checkpoint_version', 1)})"
+    return PolicyRunner(model=opponent_model, device=device), label
+
+
 def run_training(args: argparse.Namespace) -> None:
     device = torch.device("cpu")
+    rng = np.random.default_rng(0)
 
     env = TankEnv(w=15, h=15, max_steps=200, seed=0, wall_density=0.12)
     obs_by_agent = env.reset(phase=args.phase)
@@ -354,7 +403,7 @@ def run_training(args: argparse.Namespace) -> None:
     model, cfg, algo, player_buf, enemy_buf, train_buf = make_algo(device=device, obs_dim=obs_dim, act_dim=act_dim)
     learner_runner = PolicyRunner(model=model, device=device)
     train_both_sides = not bool(args.opponent_checkpoint)
-    opponent_model: ActorCritic | None = None
+    static_opponent_runner: PolicyRunner | None = None
     opponent_label = "current_policy"
     if args.opponent_checkpoint:
         opponent_model = ActorCritic(obs_dim=obs_dim, act_dim=act_dim, hidden=128).to(device)
@@ -365,14 +414,7 @@ def run_training(args: argparse.Namespace) -> None:
             f"Loaded frozen opponent from {args.opponent_checkpoint} "
             f"(mode={opponent_ckpt.get('training_mode', 'unknown')}, ckpt_v={opponent_ckpt.get('checkpoint_version', 1)})"
         )
-    opponent_runner = PolicyRunner(model=opponent_model or model, device=device)
-    collector = SelfPlayCollector(
-        learner_runner=learner_runner,
-        opponent_runner=opponent_runner,
-        player_buf=player_buf,
-        enemy_buf=enemy_buf,
-        train_both_sides=train_both_sides,
-    )
+        static_opponent_runner = PolicyRunner(model=opponent_model, device=device)
 
     models_dir = Path(__file__).resolve().parent.parent / "scripts" / "models"
     models_dir.mkdir(parents=True, exist_ok=True)
@@ -409,12 +451,43 @@ def run_training(args: argparse.Namespace) -> None:
         f"start_phase={current_phase} | advance_win_rate={args.advance_win_rate:.2f} | "
         f"min_updates_per_phase={args.min_updates_per_phase} | "
         f"opponent={'self_play' if train_both_sides else opponent_label} | "
-        f"snapshot_interval={args.snapshot_interval}"
+        f"snapshot_interval={args.snapshot_interval} | "
+        f"pool_opponent_prob={args.pool_opponent_prob:.2f}"
     )
 
     try:
         while True:
             phase = current_phase
+            round_opponent_runner = static_opponent_runner
+            round_train_both_sides = train_both_sides
+            round_opponent_label = opponent_label
+            if static_opponent_runner is None:
+                sampled_runner, sampled_label = maybe_make_pool_opponent_runner(
+                    args=args,
+                    models_dir=models_dir,
+                    phase=phase,
+                    obs_dim=obs_dim,
+                    act_dim=act_dim,
+                    device=device,
+                    rng=rng,
+                )
+                if sampled_runner is not None:
+                    round_opponent_runner = sampled_runner
+                    round_train_both_sides = False
+                    round_opponent_label = sampled_label or "pool_opponent"
+                else:
+                    round_opponent_runner = learner_runner
+                    round_train_both_sides = True
+                    round_opponent_label = "current_policy"
+
+            # Switch between live self-play and frozen historical opponents per update.
+            collector = SelfPlayCollector(
+                learner_runner=learner_runner,
+                opponent_runner=round_opponent_runner or learner_runner,
+                player_buf=player_buf,
+                enemy_buf=enemy_buf,
+                train_both_sides=round_train_both_sides,
+            )
             collector.reset()
             obs_by_agent, global_step, ep_ret = run_rollout(
                 env=env,
@@ -441,6 +514,7 @@ def run_training(args: argparse.Namespace) -> None:
                 f"phase={phase} upd={total_updates:04d} phase_upd={phase_updates:04d} "
                 f"env_steps={global_step:07d} samples={train_buf.ptr:04d} mean_ret10={mean_ret10:7.3f} "
                 f"player_wr100={wr100:5.2f} enemy_wr100={lr100:5.2f} dr100={dr100:5.2f} "
+                f"opp={round_opponent_label} "
                 f"pi={metrics['pi_loss']:.3f} v={metrics['v_loss']:.3f} "
                 f"ent={metrics['entropy']:.3f} kl={metrics['approx_kl']:.3f}"
             )
@@ -531,9 +605,11 @@ def main() -> None:
 __all__ = [
     "build_ckpt_payload",
     "CHECKPOINT_VERSION",
+    "list_opponent_snapshots",
     "load_ckpt",
     "main",
     "make_algo",
+    "maybe_make_pool_opponent_runner",
     "merge_self_play_buffers",
     "opponent_pool_dir",
     "opponent_snapshot_path",
@@ -541,8 +617,10 @@ __all__ = [
     "phase_ckpt_path",
     "run_rollout",
     "run_training",
+    "sample_opponent_snapshot",
     "save_ckpt",
     "save_opponent_snapshot",
+    "PolicyRunner",
     "SelfPlayCollector",
     "should_advance_phase",
 ]
