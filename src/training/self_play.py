@@ -107,6 +107,12 @@ def parse_args() -> argparse.Namespace:
         default=0.5,
         help="Probability of sampling a frozen opponent from the pool instead of using current-policy self-play.",
     )
+    ap.add_argument(
+        "--self-play-prob",
+        type=float,
+        default=None,
+        help="Explicit probability of using current-policy self-play. If omitted, uses 1 - pool-opponent-prob.",
+    )
     return ap.parse_args()
 
 
@@ -350,6 +356,38 @@ def sample_opponent_snapshot(models_dir: Path, phase: int, rng: np.random.Genera
     return snapshots[idx]
 
 
+def resolve_opponent_mix(args: argparse.Namespace) -> dict[str, Any]:
+    if args.snapshot_interval < 0:
+        raise ValueError("--snapshot-interval must be >= 0")
+    if not 0.0 <= args.pool_opponent_prob <= 1.0:
+        raise ValueError("--pool-opponent-prob must be between 0 and 1")
+    if args.self_play_prob is not None and not 0.0 <= args.self_play_prob <= 1.0:
+        raise ValueError("--self-play-prob must be between 0 and 1")
+
+    if args.opponent_checkpoint:
+        return {
+            "mode": "fixed",
+            "self_play_prob": 0.0,
+            "pool_opponent_prob": 0.0,
+        }
+
+    self_play_prob = 1.0 - args.pool_opponent_prob if args.self_play_prob is None else args.self_play_prob
+    total_prob = self_play_prob + args.pool_opponent_prob
+    if total_prob <= 0.0:
+        raise ValueError("self-play and pool opponent probabilities cannot both be 0")
+    if args.self_play_prob is not None and not np.isclose(total_prob, 1.0, atol=1e-6):
+        raise ValueError("--self-play-prob + --pool-opponent-prob must equal 1")
+
+    self_play_prob /= total_prob
+    pool_opponent_prob = args.pool_opponent_prob / total_prob
+    mode = "mixed" if pool_opponent_prob > 0.0 else "self_play"
+    return {
+        "mode": mode,
+        "self_play_prob": self_play_prob,
+        "pool_opponent_prob": pool_opponent_prob,
+    }
+
+
 def should_advance_phase(
     phase: int,
     single_phase: bool,
@@ -366,7 +404,7 @@ def should_advance_phase(
 
 
 def maybe_make_pool_opponent_runner(
-    args: argparse.Namespace,
+    opponent_mix: dict[str, Any],
     models_dir: Path,
     phase: int,
     obs_dim: int,
@@ -374,11 +412,11 @@ def maybe_make_pool_opponent_runner(
     device: torch.device,
     rng: np.random.Generator,
 ) -> tuple[PolicyRunner | None, str | None]:
-    if args.opponent_checkpoint:
+    if opponent_mix["mode"] == "fixed":
         return None, None
-    if args.pool_opponent_prob <= 0.0:
+    if opponent_mix["pool_opponent_prob"] <= 0.0:
         return None, None
-    if rng.random() >= args.pool_opponent_prob:
+    if rng.random() >= float(opponent_mix["pool_opponent_prob"]):
         return None, None
 
     snapshot_path = sample_opponent_snapshot(models_dir, phase, rng)
@@ -403,6 +441,7 @@ def classify_opponent_label(label: str) -> str:
 def run_training(args: argparse.Namespace) -> None:
     device = torch.device("cpu")
     rng = np.random.default_rng(0)
+    opponent_mix = resolve_opponent_mix(args)
 
     env = TankEnv(w=15, h=15, max_steps=200, seed=0, wall_density=0.12)
     obs_by_agent = env.reset(phase=args.phase)
@@ -412,7 +451,7 @@ def run_training(args: argparse.Namespace) -> None:
 
     model, cfg, algo, player_buf, enemy_buf, train_buf = make_algo(device=device, obs_dim=obs_dim, act_dim=act_dim)
     learner_runner = PolicyRunner(model=model, device=device)
-    train_both_sides = not bool(args.opponent_checkpoint)
+    train_both_sides = opponent_mix["mode"] != "fixed"
     static_opponent_runner: PolicyRunner | None = None
     opponent_label = "current_policy"
     if args.opponent_checkpoint:
@@ -465,7 +504,9 @@ def run_training(args: argparse.Namespace) -> None:
         f"min_updates_per_phase={args.min_updates_per_phase} | "
         f"opponent={'self_play' if train_both_sides else opponent_label} | "
         f"snapshot_interval={args.snapshot_interval} | "
-        f"pool_opponent_prob={args.pool_opponent_prob:.2f}"
+        f"mix_mode={opponent_mix['mode']} | "
+        f"self_play_prob={opponent_mix['self_play_prob']:.2f} | "
+        f"pool_opponent_prob={opponent_mix['pool_opponent_prob']:.2f}"
     )
 
     try:
@@ -475,8 +516,9 @@ def run_training(args: argparse.Namespace) -> None:
             round_train_both_sides = train_both_sides
             round_opponent_label = opponent_label
             if static_opponent_runner is None:
+                # Apply the validated opponent-mix policy once per update, not ad hoc inside the rollout.
                 sampled_runner, sampled_label = maybe_make_pool_opponent_runner(
-                    args=args,
+                    opponent_mix=opponent_mix,
                     models_dir=models_dir,
                     phase=phase,
                     obs_dim=obs_dim,
@@ -490,7 +532,7 @@ def run_training(args: argparse.Namespace) -> None:
                     round_opponent_label = sampled_label or "pool_opponent"
                 else:
                     round_opponent_runner = learner_runner
-                    round_train_both_sides = True
+                    round_train_both_sides = bool(opponent_mix["self_play_prob"] > 0.0)
                     round_opponent_label = "current_policy"
 
             # Switch between live self-play and frozen historical opponents per update.
@@ -645,6 +687,7 @@ __all__ = [
     "opponent_snapshot_path",
     "parse_args",
     "phase_ckpt_path",
+    "resolve_opponent_mix",
     "run_rollout",
     "run_training",
     "sample_opponent_snapshot",
