@@ -59,6 +59,23 @@
       ],
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "League Report",
+      "type": "python",
+      "request": "launch",
+      "python": "${workspaceFolder}/.venv/bin/python",
+      "module": "src.scripts.league_report",
+      "args": [
+        "--current-model",
+        "src/scripts/models/ppo_phase2_last.pt",
+        "--phase",
+        "2",
+        "--episodes",
+        "12"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}"
     }
   ]
 }

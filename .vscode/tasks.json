@@ -61,6 +61,25 @@
         "cwd": "${workspaceFolder}"
       },
       "problemMatcher": []
+    },
+    {
+      "label": "League Report",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python",
+      "args": [
+        "-m",
+        "src.scripts.league_report",
+        "--current-model",
+        "src/scripts/models/ppo_phase2_last.pt",
+        "--phase",
+        "2",
+        "--episodes",
+        "12"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
     }
   ]
 }
