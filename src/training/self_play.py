@@ -113,6 +113,18 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Explicit probability of using current-policy self-play. If omitted, uses 1 - pool-opponent-prob.",
     )
+    ap.add_argument(
+        "--max-pool-size",
+        type=int,
+        default=20,
+        help="Maximum number of snapshots to keep per phase in the opponent pool. Set to 0 to disable size pruning.",
+    )
+    ap.add_argument(
+        "--keep-every",
+        type=int,
+        default=1,
+        help="When pruning, only keep snapshots whose update number is a multiple of this value.",
+    )
     return ap.parse_args()
 
 
@@ -356,9 +368,44 @@ def sample_opponent_snapshot(models_dir: Path, phase: int, rng: np.random.Genera
     return snapshots[idx]
 
 
+def snapshot_update_number(path: Path) -> int:
+    stem = path.stem
+    marker = "_upd"
+    if marker not in stem:
+        return -1
+    suffix = stem.split(marker, 1)[1]
+    return int(suffix) if suffix.isdigit() else -1
+
+
+def prune_opponent_pool(models_dir: Path, phase: int, max_pool_size: int, keep_every: int) -> list[Path]:
+    snapshots = list_opponent_snapshots(models_dir, phase)
+    if not snapshots:
+        return []
+
+    kept = [
+        path
+        for path in snapshots
+        if keep_every <= 1 or (snapshot_update_number(path) >= 0 and snapshot_update_number(path) % keep_every == 0)
+    ]
+    if max_pool_size > 0 and len(kept) > max_pool_size:
+        kept = kept[-max_pool_size:]
+
+    kept_set = set(kept)
+    removed: list[Path] = []
+    for path in snapshots:
+        if path not in kept_set:
+            path.unlink(missing_ok=True)
+            removed.append(path)
+    return removed
+
+
 def resolve_opponent_mix(args: argparse.Namespace) -> dict[str, Any]:
     if args.snapshot_interval < 0:
         raise ValueError("--snapshot-interval must be >= 0")
+    if args.max_pool_size < 0:
+        raise ValueError("--max-pool-size must be >= 0")
+    if args.keep_every <= 0:
+        raise ValueError("--keep-every must be >= 1")
     if not 0.0 <= args.pool_opponent_prob <= 1.0:
         raise ValueError("--pool-opponent-prob must be between 0 and 1")
     if args.self_play_prob is not None and not 0.0 <= args.self_play_prob <= 1.0:
@@ -506,7 +553,9 @@ def run_training(args: argparse.Namespace) -> None:
         f"snapshot_interval={args.snapshot_interval} | "
         f"mix_mode={opponent_mix['mode']} | "
         f"self_play_prob={opponent_mix['self_play_prob']:.2f} | "
-        f"pool_opponent_prob={opponent_mix['pool_opponent_prob']:.2f}"
+        f"pool_opponent_prob={opponent_mix['pool_opponent_prob']:.2f} | "
+        f"max_pool_size={args.max_pool_size} | "
+        f"keep_every={args.keep_every}"
     )
 
     try:
@@ -614,6 +663,15 @@ def run_training(args: argparse.Namespace) -> None:
                     cfg=cfg,
                 )
                 print(f"Saved opponent snapshot {snapshot_path}")
+                # Prune stale pool entries immediately so later sampling sees the retained set only.
+                removed_paths = prune_opponent_pool(
+                    models_dir=models_dir,
+                    phase=phase,
+                    max_pool_size=args.max_pool_size,
+                    keep_every=args.keep_every,
+                )
+                if removed_paths:
+                    print(f"Pruned {len(removed_paths)} opponent snapshots from phase={phase}")
 
             if wr100 > best_wr100:
                 best_wr100 = wr100
@@ -687,12 +745,14 @@ __all__ = [
     "opponent_snapshot_path",
     "parse_args",
     "phase_ckpt_path",
+    "prune_opponent_pool",
     "resolve_opponent_mix",
     "run_rollout",
     "run_training",
     "sample_opponent_snapshot",
     "save_ckpt",
     "save_opponent_snapshot",
+    "snapshot_update_number",
     "PolicyRunner",
     "SelfPlayCollector",
     "should_advance_phase",
