@@ -4,57 +4,72 @@
   </a>
 </h1>
 
-<p align="center">Train a shared-policy PPO tank AI through symmetric self-play in a custom grid environment</p>
+<p align="center">Train a hidden-information PPO tank AI through self-play, opponent pools, and evaluation-driven progression</p>
 
 <p align="center">
   <img src="https://img.shields.io/github/last-commit/iPelo/Tank-Reinforcement-Learning?style=for-the-badge" alt="Last Commit">
-  <img src="https://img.shields.io/github/languages/top/iPelo/Tank-Reinforcement-Learning?style=for-the-badge" alt="Top Language">
-  <img src="https://img.shields.io/github/languages/count/iPelo/Tank-Reinforcement-Learning?style=for-the-badge" alt="Language Count">
+  <img src="https://img.shields.io/github/stars/iPelo/Tank-Reinforcement-Learning?style=for-the-badge" alt="Stars">
+  <img src="https://img.shields.io/github/forks/iPelo/Tank-Reinforcement-Learning?style=for-the-badge" alt="Forks">
+  <img src="https://img.shields.io/github/issues/iPelo/Tank-Reinforcement-Learning?style=for-the-badge" alt="Issues">
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Markdown-000000?logo=markdown&logoColor=white&style=for-the-badge" alt="Markdown">
-  <img src="https://img.shields.io/badge/Python-3776AB?logo=python&logoColor=white&style=for-the-badge" alt="Python">
-  <img src="https://img.shields.io/badge/PyTorch-EE4C2C?logo=pytorch&logoColor=white&style=for-the-badge" alt="PyTorch">
-  <img src="https://img.shields.io/badge/NumPy-013243?logo=numpy&logoColor=white&style=for-the-badge" alt="NumPy">
-  <img src="https://img.shields.io/badge/Pygame-0E1117?logo=pygame&logoColor=white&style=for-the-badge" alt="Pygame">
+  <img src="https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white&style=for-the-badge" alt="Python">
+  <img src="https://img.shields.io/badge/PyTorch-PPO-EE4C2C?logo=pytorch&logoColor=white&style=for-the-badge" alt="PyTorch PPO">
+  <img src="https://img.shields.io/badge/Environment-Hidden%20Info-0E7490?style=for-the-badge" alt="Hidden Information">
+  <img src="https://img.shields.io/badge/Training-Self%20Play-15803D?style=for-the-badge" alt="Self Play">
+  <img src="https://img.shields.io/badge/Eval-League%20Report-7C3AED?style=for-the-badge" alt="League Report">
+</p>
+
+<p align="center">
+  <img src="https://github-readme-stats.vercel.app/api/pin/?username=iPelo&repo=Tank-Reinforcement-Learning&theme=transparent&hide_border=true" alt="Repository Widget">
 </p>
 
 ---
 
 ## Table of Contents
 - [Overview](#overview)
+- [Current Features](#current-features)
 - [Environment](#environment)
 - [Project Structure](#project-structure)
 - [Getting Started](#getting-started)
 - [Training](#training)
 - [Evaluation](#evaluation)
-- [Checkpoints](#checkpoints)
+- [Checkpoints and Opponent Pool](#checkpoints-and-opponent-pool)
+- [Roadmap Status](#roadmap-status)
 
 ---
 
 ## Overview
 
-**Tank-Reinforcement-Learning** is a custom reinforcement learning project where a shared PPO policy learns to control both tanks in a **15x15 grid world** through self-play.
+**Tank-Reinforcement-Learning** is a reinforcement learning project where a PPO policy learns tank combat through **self-play** in a **15x15 grid world** with random walls.
 
-The project includes:
+The current version is no longer a simple agent-vs-scripted-bot prototype. It now includes:
 
-- A symmetric `TankEnv` environment with walls, movement, turning, and shooting
-- A PPO implementation with **GAE**, clipped policy loss, value loss, and entropy bonus
-- A PyTorch **actor-critic** network shared by both tanks during self-play
-- Optional **Pygame rendering** for watching random or trained agents play
+- Symmetric `AI vs AI` tank combat
+- Hidden-information observations instead of always-visible enemy state
+- Shared-policy self-play and frozen-opponent training
+- Opponent pool snapshot saving and sampling
+- Checkpoint-vs-checkpoint evaluation
+- League-style reporting and evaluation-driven best model tracking
 
-Training still follows increasingly difficult phases:
+---
 
-- `phase 0`: movement and positioning
-- `phase 1`: combat with shooting enabled
-- `phase 2`: full training setup used by default
+## Current Features
+
+- **Symmetric environment**: both tanks follow the same rules, actions, rewards, and observation shape
+- **Hidden-information setup**: tanks only receive direct enemy directional features when line of sight exists
+- **Self-play trainer**: current policy can train against itself, a fixed checkpoint, or sampled pool opponents
+- **Opponent pool**: historical snapshots are saved under phase-specific directories for later reuse
+- **Best-model tracking**: `best` checkpoints are updated from evaluation results, not only raw rollout statistics
+- **Phase progression**: curriculum advancement is gated by evaluation performance
+- **Evaluation tooling**: random eval, checkpoint match eval, and league report CLI flows
 
 ---
 
 ## Environment
 
-Each episode takes place in a procedurally generated map with random wall placement while keeping both tanks reachable. Both tanks follow the same rules and receive their own observations and rewards each step.
+Each episode runs on a procedurally generated map with random internal wall placement while keeping both tanks reachable.
 
 **Action space (`6` actions):**
 
@@ -65,18 +80,28 @@ Each episode takes place in a procedurally generated map with random wall placem
 - `BWD`
 - `SHOOT`
 
+**Combat and game rules:**
+
+- Tanks move simultaneously
+- Tanks can rotate, move, and shoot
+- Shots are ray-based and blocked by walls
+- Shooting uses cooldown steps
+- Episodes end on kill or max step limit
+
 **Rewards:**
 
 - `+1.0` for winning
 - `-1.0` for losing
 - `0.0` for a draw
 - Small step penalty to encourage faster outcomes
-- Extra penalty for shooting without ending the fight
+- Extra penalty for non-finishing shots
 
-Episodes end when:
+**Observation design:**
 
-- One tank is destroyed, or
-- The maximum step limit is reached
+- Wall-distance features
+- Enemy directional features only when actually visible
+- Own direction, position, cooldown, and step progress
+- Recent shot cue for hidden-information play
 
 ---
 
@@ -93,25 +118,29 @@ src/
 │   ├── entities.py
 │   └── map_gen.py
 ├── evaluation/
-│   └── eval_match.py
+│   ├── checkpoint_match.py
+│   ├── eval_match.py
+│   └── league_report.py
 ├── training/
 │   ├── buffer.py
-│   └── ppo.py
+│   ├── ppo.py
+│   └── self_play.py
 └── scripts/
-    ├── train.py
     ├── eval.py
+    ├── league_report.py
+    ├── match_eval.py
+    ├── train.py
     └── models/
 ```
 
 Key files:
 
-- `src/env/tank_env.py`: custom tank battle environment
+- `src/env/tank_env.py`: hidden-information symmetric tank environment
 - `src/agents/policy.py`: actor-critic policy network
-- `src/training/buffer.py`: rollout buffer and GAE computation
-- `src/training/ppo.py`: PPO update logic
-- `src/scripts/train.py`: shared-policy self-play training entry point
-- `src/evaluation/eval_match.py`: evaluation and rendering implementation
-- `src/scripts/eval.py`: thin evaluation entry point
+- `src/training/self_play.py`: self-play training loop, pool logic, checkpoint policy, and progression
+- `src/evaluation/eval_match.py`: random and saved-model evaluation
+- `src/evaluation/checkpoint_match.py`: checkpoint-vs-checkpoint evaluation
+- `src/evaluation/league_report.py`: compact league report across meaningful opponents
 
 ---
 
@@ -133,6 +162,12 @@ git clone https://github.com/iPelo/Tank-Reinforcement-Learning.git
 # Enter the project directory
 cd Tank-Reinforcement-Learning
 
+# Create a virtual environment (recommended)
+python -m venv .venv
+
+# Activate it
+source .venv/bin/activate
+
 # Install dependencies
 pip install -r requirements.txt
 ```
@@ -141,58 +176,91 @@ pip install -r requirements.txt
 
 ## Training
 
-Train the shared-policy self-play PPO agent with:
+Train the current hidden-information self-play setup with:
 
 ```bash
-python -m src.scripts.train --phase 2
+python -m src.scripts.train --phase 2 --single-phase
 ```
 
-You can also choose a different curriculum phase:
+Run curriculum training across phases:
 
 ```bash
-python -m src.scripts.train --phase 0
-python -m src.scripts.train --phase 1
-python -m src.scripts.train --phase 2
+python -m src.scripts.train
 ```
 
-During training, the script logs:
+Train against a fixed frozen opponent:
+
+```bash
+python -m src.scripts.train \
+  --phase 2 \
+  --single-phase \
+  --opponent-checkpoint src/scripts/models/ppo_phase2_best.pt
+```
+
+Useful training controls:
+
+- `--pool-opponent-prob`: probability of sampling a frozen opponent from the pool
+- `--self-play-prob`: explicit probability for current-policy self-play
+- `--snapshot-interval`: how often pool snapshots are created
+- `--max-pool-size`: maximum retained pool snapshots per phase
+- `--keep-every`: retain only snapshots aligned to a step interval
+- `--eval-interval`: how often best-model evaluation runs
+- `--best-eval-episodes`: episodes used for best-model evaluation
+- `--promotion-eval-episodes`: episodes used for phase-promotion evaluation
+
+Training logs include:
 
 - update number
-- total environment steps
-- total self-play samples
-- recent mean return
-- player/enemy win rates and draw rate
-- PPO losses and approximate KL
+- environment steps
+- sample count
+- recent returns
+- player/enemy win rates
+- self-play vs frozen-opponent mix rates
+- current opponent label
+- PPO losses and KL
 
 ---
 
 ## Evaluation
 
-Run random-vs-random evaluation:
+Run a quick hidden-information eval:
 
 ```bash
-python -m src.scripts.eval --episodes 10 --phase 2
+python -m src.scripts.eval --phase 2 --episodes 1
 ```
 
-Run a trained shared policy controlling both tanks:
+Render hidden-information matches:
 
 ```bash
-python -m src.scripts.eval --episodes 10 --phase 2 --model src/scripts/models/ppo_phase2_best.pt
+python -m src.scripts.eval --phase 2 --episodes 10 --render
 ```
 
-Render gameplay with Pygame:
+Evaluate one checkpoint against another:
 
 ```bash
-python -m src.scripts.eval --episodes 10 --phase 2 --model src/scripts/models/ppo_phase2_best.pt --render
+python -m src.scripts.match_eval \
+  --player-model src/scripts/models/ppo_phase2_last.pt \
+  --enemy-model src/scripts/models/ppo_phase2_best.pt \
+  --phase 2 \
+  --episodes 10
+```
+
+Generate a league report for the current checkpoint:
+
+```bash
+python -m src.scripts.league_report \
+  --current-model src/scripts/models/ppo_phase2_last.pt \
+  --phase 2 \
+  --episodes 12
 ```
 
 ---
 
-## Checkpoints
+## Checkpoints and Opponent Pool
 
-Training automatically saves checkpoints under `src/scripts/models/`.
+Training checkpoints are stored under `src/scripts/models/`.
 
-Files include:
+Common files:
 
 - `ppo_phase0_last.pt`
 - `ppo_phase0_best.pt`
@@ -201,7 +269,27 @@ Files include:
 - `ppo_phase2_last.pt`
 - `ppo_phase2_best.pt`
 
-`best` checkpoints are updated when the rolling win rate improves.
+Opponent pool snapshots are stored by phase:
+
+```bash
+src/scripts/models/opponent_pool/
+└── phase_2/
+    ├── ppo_phase2_upd000010.pt
+    ├── ppo_phase2_upd000020.pt
+    └── ...
+```
+
+`best` checkpoints are now chosen through periodic evaluation, not only raw rollout performance.
+
+---
+
+## Roadmap Status
+
+- **Phase 1**: symmetric `AI vs AI` self-play foundation
+- **Phase 2**: hidden-information environment observations
+- **Phase 3**: frozen opponents, opponent pool, checkpoint match eval, league metrics
+- **Phase 4**: opponent-mix control, retention policy, eval-based best tracking, league reporting, eval-gated promotion
+- **Next**: memory/recurrent policies, stronger league evaluation, and multi-tank combat
 
 ---
 
