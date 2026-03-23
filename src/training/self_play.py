@@ -138,6 +138,12 @@ def parse_args() -> argparse.Namespace:
         default=6,
         help="Number of episodes to run when scoring a candidate best model.",
     )
+    ap.add_argument(
+        "--promotion-eval-episodes",
+        type=int,
+        default=8,
+        help="Number of episodes to run when checking whether the current phase can advance.",
+    )
     return ap.parse_args()
 
 
@@ -419,6 +425,8 @@ def resolve_opponent_mix(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError("--eval-interval must be >= 0")
     if args.best_eval_episodes <= 0:
         raise ValueError("--best-eval-episodes must be >= 1")
+    if args.promotion_eval_episodes <= 0:
+        raise ValueError("--promotion-eval-episodes must be >= 1")
     if args.max_pool_size < 0:
         raise ValueError("--max-pool-size must be >= 0")
     if args.keep_every <= 0:
@@ -457,14 +465,14 @@ def should_advance_phase(
     single_phase: bool,
     phase_updates: int,
     min_updates_per_phase: int,
-    win_rate: float,
+    eval_player_win_rate: float,
     advance_win_rate: float,
 ) -> bool:
     if single_phase or phase >= 2:
         return False
     if phase_updates < min_updates_per_phase:
         return False
-    return win_rate >= advance_win_rate
+    return eval_player_win_rate >= advance_win_rate
 
 
 def maybe_make_pool_opponent_runner(
@@ -568,6 +576,28 @@ def evaluate_best_candidate(
     return aggregate
 
 
+def evaluate_phase_promotion(
+    phase: int,
+    episodes: int,
+    learner_model: ActorCritic,
+    learner_runner: PolicyRunner,
+    models_dir: Path,
+    obs_dim: int,
+    act_dim: int,
+    device: torch.device,
+) -> dict[str, float]:
+    return evaluate_best_candidate(
+        phase=phase,
+        episodes=episodes,
+        learner_model=learner_model,
+        learner_runner=learner_runner,
+        models_dir=models_dir,
+        obs_dim=obs_dim,
+        act_dim=act_dim,
+        device=device,
+    )
+
+
 def run_training(args: argparse.Namespace) -> None:
     device = torch.device("cpu")
     rng = np.random.default_rng(0)
@@ -626,6 +656,7 @@ def run_training(args: argparse.Namespace) -> None:
     global_step = 0
     phase_updates = 0
     best_eval_score = -float("inf")
+    promotion_eval_player_wr = 0.0
 
     print("PPO config:", asdict(cfg))
     print(
@@ -640,7 +671,8 @@ def run_training(args: argparse.Namespace) -> None:
         f"max_pool_size={args.max_pool_size} | "
         f"keep_every={args.keep_every} | "
         f"eval_interval={args.eval_interval} | "
-        f"best_eval_episodes={args.best_eval_episodes}"
+        f"best_eval_episodes={args.best_eval_episodes} | "
+        f"promotion_eval_episodes={args.promotion_eval_episodes}"
     )
 
     try:
@@ -788,15 +820,36 @@ def run_training(args: argparse.Namespace) -> None:
                         phase,
                         cfg=cfg,
                     )
+                promotion_eval_player_wr = eval_metrics["player_win_rate"]
 
             if should_advance_phase(
                 phase=phase,
                 single_phase=args.single_phase,
                 phase_updates=phase_updates,
                 min_updates_per_phase=args.min_updates_per_phase,
-                win_rate=wr100,
+                eval_player_win_rate=promotion_eval_player_wr,
                 advance_win_rate=args.advance_win_rate,
             ):
+                promotion_metrics = evaluate_phase_promotion(
+                    phase=phase,
+                    episodes=args.promotion_eval_episodes,
+                    learner_model=model,
+                    learner_runner=learner_runner,
+                    models_dir=models_dir,
+                    obs_dim=obs_dim,
+                    act_dim=act_dim,
+                    device=device,
+                )
+                promotion_eval_player_wr = promotion_metrics["player_win_rate"]
+                print(
+                    f"promotion_eval player_wr={promotion_metrics['player_win_rate']:.2f} "
+                    f"enemy_wr={promotion_metrics['enemy_win_rate']:.2f} "
+                    f"draw_rate={promotion_metrics['draw_rate']:.2f} "
+                    f"score={promotion_metrics['score']:.3f}"
+                )
+                # Require a fresh evaluation pass before phase advancement, not just recent rollout statistics.
+                if promotion_metrics["player_win_rate"] < args.advance_win_rate:
+                    continue
                 completed_phase_updates = phase_updates
                 save_ckpt(
                     phase_ckpt_path(models_dir, phase, "last"),
@@ -810,13 +863,15 @@ def run_training(args: argparse.Namespace) -> None:
                 current_phase += 1
                 phase_updates = 0
                 best_eval_score = -float("inf")
+                promotion_eval_player_wr = 0.0
                 for values in episode_stats.values():
                     values.clear()
                 ep_ret = {"player": 0.0, "enemy": 0.0}
                 obs_by_agent = env.reset(phase=current_phase)
                 print(
                     f"Promoted to phase={current_phase} after "
-                    f"phase_updates={completed_phase_updates} total_updates={total_updates} wr100={wr100:.2f}"
+                    f"phase_updates={completed_phase_updates} total_updates={total_updates} "
+                    f"promotion_player_wr={promotion_metrics['player_win_rate']:.2f}"
                 )
 
     except KeyboardInterrupt:
@@ -842,6 +897,7 @@ __all__ = [
     "CHECKPOINT_VERSION",
     "classify_opponent_label",
     "evaluate_best_candidate",
+    "evaluate_phase_promotion",
     "list_opponent_snapshots",
     "load_ckpt",
     "main",
