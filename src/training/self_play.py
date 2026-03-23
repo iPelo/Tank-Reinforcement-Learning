@@ -7,6 +7,7 @@ import numpy as np
 import torch
 
 from src.agents.policy import ActorCritic
+from src.evaluation.checkpoint_match import run_match_series
 from src.env.tank_env import TankEnv
 from src.training.buffer import RolloutBuffer
 from src.training.ppo import PPO, PPOConfig
@@ -124,6 +125,18 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=1,
         help="When pruning, only keep snapshots whose update number is a multiple of this value.",
+    )
+    ap.add_argument(
+        "--eval-interval",
+        type=int,
+        default=10,
+        help="Run evaluation for best-model tracking every N updates. Set to 0 to disable.",
+    )
+    ap.add_argument(
+        "--best-eval-episodes",
+        type=int,
+        default=6,
+        help="Number of episodes to run when scoring a candidate best model.",
     )
     return ap.parse_args()
 
@@ -402,6 +415,10 @@ def prune_opponent_pool(models_dir: Path, phase: int, max_pool_size: int, keep_e
 def resolve_opponent_mix(args: argparse.Namespace) -> dict[str, Any]:
     if args.snapshot_interval < 0:
         raise ValueError("--snapshot-interval must be >= 0")
+    if args.eval_interval < 0:
+        raise ValueError("--eval-interval must be >= 0")
+    if args.best_eval_episodes <= 0:
+        raise ValueError("--best-eval-episodes must be >= 1")
     if args.max_pool_size < 0:
         raise ValueError("--max-pool-size must be >= 0")
     if args.keep_every <= 0:
@@ -485,6 +502,72 @@ def classify_opponent_label(label: str) -> str:
     return "other"
 
 
+def build_best_eval_opponents(
+    models_dir: Path,
+    phase: int,
+    learner_runner: PolicyRunner,
+    obs_dim: int,
+    act_dim: int,
+    device: torch.device,
+) -> list[tuple[str, PolicyRunner]]:
+    opponents: list[tuple[str, PolicyRunner]] = [("current_policy", learner_runner)]
+    snapshots = list_opponent_snapshots(models_dir, phase)
+    if snapshots:
+        latest_snapshot = snapshots[-1]
+        opponent_model = ActorCritic(obs_dim=obs_dim, act_dim=act_dim, hidden=128).to(device)
+        load_ckpt(latest_snapshot, opponent_model, device)
+        opponent_model.eval()
+        opponents.append((latest_snapshot.name, PolicyRunner(opponent_model, device)))
+    return opponents
+
+
+def evaluate_best_candidate(
+    phase: int,
+    episodes: int,
+    learner_model: ActorCritic,
+    learner_runner: PolicyRunner,
+    models_dir: Path,
+    obs_dim: int,
+    act_dim: int,
+    device: torch.device,
+) -> dict[str, float]:
+    env = TankEnv(w=15, h=15, max_steps=200, seed=0, wall_density=0.12)
+    aggregate = {
+        "score": 0.0,
+        "player_win_rate": 0.0,
+        "enemy_win_rate": 0.0,
+        "draw_rate": 0.0,
+        "avg_player_return": 0.0,
+    }
+    opponents = build_best_eval_opponents(
+        models_dir=models_dir,
+        phase=phase,
+        learner_runner=learner_runner,
+        obs_dim=obs_dim,
+        act_dim=act_dim,
+        device=device,
+    )
+    for _, opponent_runner in opponents:
+        metrics = run_match_series(
+            env=env,
+            player_model=learner_model,
+            enemy_model=opponent_runner.model,
+            episodes=episodes,
+            device=device,
+            phase=phase,
+        )
+        aggregate["score"] += metrics["player_win_rate"] - metrics["enemy_win_rate"]
+        aggregate["player_win_rate"] += metrics["player_win_rate"]
+        aggregate["enemy_win_rate"] += metrics["enemy_win_rate"]
+        aggregate["draw_rate"] += metrics["draw_rate"]
+        aggregate["avg_player_return"] += metrics["avg_player_return"]
+
+    count = float(len(opponents))
+    for key in aggregate:
+        aggregate[key] /= count
+    return aggregate
+
+
 def run_training(args: argparse.Namespace) -> None:
     device = torch.device("cpu")
     rng = np.random.default_rng(0)
@@ -542,7 +625,7 @@ def run_training(args: argparse.Namespace) -> None:
     ep_ret = {"player": 0.0, "enemy": 0.0}
     global_step = 0
     phase_updates = 0
-    best_wr100 = -1.0
+    best_eval_score = -float("inf")
 
     print("PPO config:", asdict(cfg))
     print(
@@ -555,7 +638,9 @@ def run_training(args: argparse.Namespace) -> None:
         f"self_play_prob={opponent_mix['self_play_prob']:.2f} | "
         f"pool_opponent_prob={opponent_mix['pool_opponent_prob']:.2f} | "
         f"max_pool_size={args.max_pool_size} | "
-        f"keep_every={args.keep_every}"
+        f"keep_every={args.keep_every} | "
+        f"eval_interval={args.eval_interval} | "
+        f"best_eval_episodes={args.best_eval_episodes}"
     )
 
     try:
@@ -673,17 +758,36 @@ def run_training(args: argparse.Namespace) -> None:
                 if removed_paths:
                     print(f"Pruned {len(removed_paths)} opponent snapshots from phase={phase}")
 
-            if wr100 > best_wr100:
-                best_wr100 = wr100
-                save_ckpt(
-                    phase_ckpt_path(models_dir, phase, "best"),
-                    model,
-                    obs_dim,
-                    act_dim,
-                    total_updates,
-                    phase,
-                    cfg=cfg,
+            if args.eval_interval > 0 and total_updates % args.eval_interval == 0:
+                eval_metrics = evaluate_best_candidate(
+                    phase=phase,
+                    episodes=args.best_eval_episodes,
+                    learner_model=model,
+                    learner_runner=learner_runner,
+                    models_dir=models_dir,
+                    obs_dim=obs_dim,
+                    act_dim=act_dim,
+                    device=device,
                 )
+                print(
+                    f"best_eval score={eval_metrics['score']:.3f} "
+                    f"player_wr={eval_metrics['player_win_rate']:.2f} "
+                    f"enemy_wr={eval_metrics['enemy_win_rate']:.2f} "
+                    f"draw_rate={eval_metrics['draw_rate']:.2f} "
+                    f"avg_player_return={eval_metrics['avg_player_return']:.3f}"
+                )
+                # Promote best only when head-to-head eval beats the previous best score.
+                if eval_metrics["score"] > best_eval_score:
+                    best_eval_score = eval_metrics["score"]
+                    save_ckpt(
+                        phase_ckpt_path(models_dir, phase, "best"),
+                        model,
+                        obs_dim,
+                        act_dim,
+                        total_updates,
+                        phase,
+                        cfg=cfg,
+                    )
 
             if should_advance_phase(
                 phase=phase,
@@ -705,7 +809,7 @@ def run_training(args: argparse.Namespace) -> None:
                 )
                 current_phase += 1
                 phase_updates = 0
-                best_wr100 = -1.0
+                best_eval_score = -float("inf")
                 for values in episode_stats.values():
                     values.clear()
                 ep_ret = {"player": 0.0, "enemy": 0.0}
@@ -734,7 +838,10 @@ def main() -> None:
 
 __all__ = [
     "build_ckpt_payload",
+    "build_best_eval_opponents",
     "CHECKPOINT_VERSION",
+    "classify_opponent_label",
+    "evaluate_best_candidate",
     "list_opponent_snapshots",
     "load_ckpt",
     "main",
