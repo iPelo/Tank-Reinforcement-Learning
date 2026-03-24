@@ -1,3 +1,3 @@
-from .policy import ActorCritic, ModelIO
+from .policy import ActorCritic, ModelIO, RecurrentActorCritic, RecurrentModelIO
 
-__all__ = ["ActorCritic", "ModelIO"]
+__all__ = ["ActorCritic", "ModelIO", "RecurrentActorCritic", "RecurrentModelIO"]
