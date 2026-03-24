@@ -12,7 +12,6 @@ from src.env.tank_env import TankEnv
 from src.training.buffer import RecurrentRolloutBuffer, RolloutBuffer
 from src.training.ppo import PPO, PPOConfig
 
-AGENT_IDS = ("player", "enemy")
 CHECKPOINT_VERSION = 3
 
 
@@ -22,6 +21,8 @@ def build_ckpt_payload(
     act_dim: int,
     updates: int,
     phase: int,
+    agent_ids: tuple[str, ...],
+    layout: str,
     cfg: PPOConfig | None = None,
 ) -> dict[str, Any]:
     policy_type = "recurrent_shared_policy" if isinstance(model, RecurrentActorCritic) else "shared_policy"
@@ -29,7 +30,8 @@ def build_ckpt_payload(
         "checkpoint_version": CHECKPOINT_VERSION,
         "training_mode": "self_play",
         "policy_type": policy_type,
-        "agent_ids": list(AGENT_IDS),
+        "agent_ids": list(agent_ids),
+        "layout": layout,
         "model": model.state_dict(),
         "obs_dim": obs_dim,
         "act_dim": act_dim,
@@ -51,9 +53,23 @@ def save_ckpt(
     act_dim: int,
     updates: int,
     phase: int,
+    agent_ids: tuple[str, ...],
+    layout: str,
     cfg: PPOConfig | None = None,
 ) -> None:
-    torch.save(build_ckpt_payload(model=model, obs_dim=obs_dim, act_dim=act_dim, updates=updates, phase=phase, cfg=cfg), path)
+    torch.save(
+        build_ckpt_payload(
+            model=model,
+            obs_dim=obs_dim,
+            act_dim=act_dim,
+            updates=updates,
+            phase=phase,
+            agent_ids=agent_ids,
+            layout=layout,
+            cfg=cfg,
+        ),
+        path,
+    )
 
 
 def load_ckpt(path: Path, model: PolicyModel, device: torch.device) -> tuple[int, int, dict[str, Any]]:
@@ -155,12 +171,19 @@ def parse_args() -> argparse.Namespace:
         choices=("feedforward", "recurrent"),
         help="Training policy architecture.",
     )
+    ap.add_argument(
+        "--layout",
+        type=str,
+        default="1v1",
+        choices=("1v1", "1v2", "2v2"),
+        help="Environment layout to train on.",
+    )
     return ap.parse_args()
 
 
 def make_algo(
     device: torch.device, obs_dim: int, act_dim: int, policy_arch: str
-) -> tuple[PolicyModel, PPOConfig, PPO, RolloutBuffer | RecurrentRolloutBuffer, RolloutBuffer | RecurrentRolloutBuffer, RolloutBuffer | RecurrentRolloutBuffer]:
+) -> tuple[PolicyModel, PPOConfig, PPO]:
     if policy_arch == "recurrent":
         model: PolicyModel = RecurrentActorCritic(obs_dim=obs_dim, act_dim=act_dim, hidden=128, recurrent_hidden=128).to(device)
     else:
@@ -182,48 +205,44 @@ def make_algo(
     )
 
     algo = PPO(model=model, cfg=cfg, device=device)
+    return model, cfg, algo
+
+
+def make_rollout_buffer(
+    model: PolicyModel,
+    size: int,
+    obs_dim: int,
+    device: torch.device,
+) -> RolloutBuffer | RecurrentRolloutBuffer:
     if isinstance(model, RecurrentActorCritic):
-        player_buf = RecurrentRolloutBuffer(size=cfg.rollout_steps, obs_dim=obs_dim, recurrent_hidden=model.recurrent_hidden, device=device)
-        enemy_buf = RecurrentRolloutBuffer(size=cfg.rollout_steps, obs_dim=obs_dim, recurrent_hidden=model.recurrent_hidden, device=device)
-        train_buf = RecurrentRolloutBuffer(size=cfg.rollout_steps * 2, obs_dim=obs_dim, recurrent_hidden=model.recurrent_hidden, device=device)
-    else:
-        player_buf = RolloutBuffer(size=cfg.rollout_steps, obs_dim=obs_dim, device=device)
-        enemy_buf = RolloutBuffer(size=cfg.rollout_steps, obs_dim=obs_dim, device=device)
-        train_buf = RolloutBuffer(size=cfg.rollout_steps * 2, obs_dim=obs_dim, device=device)
-    return model, cfg, algo, player_buf, enemy_buf, train_buf
+        return RecurrentRolloutBuffer(size=size, obs_dim=obs_dim, recurrent_hidden=model.recurrent_hidden, device=device)
+    return RolloutBuffer(size=size, obs_dim=obs_dim, device=device)
 
 
 def merge_self_play_buffers(
     train_buf: RolloutBuffer | RecurrentRolloutBuffer,
-    player_buf: RolloutBuffer | RecurrentRolloutBuffer,
-    enemy_buf: RolloutBuffer | RecurrentRolloutBuffer,
+    agent_bufs: dict[str, RolloutBuffer | RecurrentRolloutBuffer],
+    ordered_agent_ids: tuple[str, ...],
 ) -> None:
     train_buf.reset()
-    split = player_buf.size
-
-    train_buf.obs[:split] = player_buf.obs
-    train_buf.obs[split:] = enemy_buf.obs
-    train_buf.act[:split] = player_buf.act
-    train_buf.act[split:] = enemy_buf.act
-    train_buf.rew[:split] = player_buf.rew
-    train_buf.rew[split:] = enemy_buf.rew
-    train_buf.done[:split] = player_buf.done
-    train_buf.done[split:] = enemy_buf.done
-    train_buf.logp[:split] = player_buf.logp
-    train_buf.logp[split:] = enemy_buf.logp
-    train_buf.val[:split] = player_buf.val
-    train_buf.val[split:] = enemy_buf.val
-    train_buf.adv[:split] = player_buf.adv
-    train_buf.adv[split:] = enemy_buf.adv
-    train_buf.ret[:split] = player_buf.ret
-    train_buf.ret[split:] = enemy_buf.ret
-    if isinstance(train_buf, RecurrentRolloutBuffer) and isinstance(player_buf, RecurrentRolloutBuffer) and isinstance(enemy_buf, RecurrentRolloutBuffer):
-        train_buf.episode_start[:split] = player_buf.episode_start
-        train_buf.episode_start[split:] = enemy_buf.episode_start
-        train_buf.init_h[:split] = player_buf.init_h
-        train_buf.init_h[split:] = enemy_buf.init_h
-        train_buf.init_c[:split] = player_buf.init_c
-        train_buf.init_c[split:] = enemy_buf.init_c
+    offset = 0
+    for agent_id in ordered_agent_ids:
+        src_buf = agent_bufs[agent_id]
+        size = src_buf.size
+        next_offset = offset + size
+        train_buf.obs[offset:next_offset] = src_buf.obs
+        train_buf.act[offset:next_offset] = src_buf.act
+        train_buf.rew[offset:next_offset] = src_buf.rew
+        train_buf.done[offset:next_offset] = src_buf.done
+        train_buf.logp[offset:next_offset] = src_buf.logp
+        train_buf.val[offset:next_offset] = src_buf.val
+        train_buf.adv[offset:next_offset] = src_buf.adv
+        train_buf.ret[offset:next_offset] = src_buf.ret
+        if isinstance(train_buf, RecurrentRolloutBuffer) and isinstance(src_buf, RecurrentRolloutBuffer):
+            train_buf.episode_start[offset:next_offset] = src_buf.episode_start
+            train_buf.init_h[offset:next_offset] = src_buf.init_h
+            train_buf.init_c[offset:next_offset] = src_buf.init_c
+        offset = next_offset
     train_buf.ptr = train_buf.size
     train_buf.full = True
 
@@ -283,43 +302,52 @@ class SelfPlayCollector:
         self,
         learner_runner: PolicyRunner,
         opponent_runner: PolicyRunner,
-        player_buf: RolloutBuffer | RecurrentRolloutBuffer,
-        enemy_buf: RolloutBuffer | RecurrentRolloutBuffer,
-        train_both_sides: bool,
+        agent_bufs: dict[str, RolloutBuffer | RecurrentRolloutBuffer],
+        train_agent_ids: tuple[str, ...],
+        controlled_agent_ids: tuple[str, ...],
+        learner_team: str,
+        team_by_agent: dict[str, str],
     ) -> None:
         self.learner_runner = learner_runner
         self.opponent_runner = opponent_runner
-        self.player_buf = player_buf
-        self.enemy_buf = enemy_buf
-        self.train_both_sides = train_both_sides
-        self.states: dict[str, HiddenState | None] = {"player": None, "enemy": None}
-        self.episode_start: dict[str, bool] = {"player": True, "enemy": True}
+        self.agent_bufs = agent_bufs
+        self.train_agent_ids = train_agent_ids
+        self.controlled_agent_ids = controlled_agent_ids
+        self.learner_team = learner_team
+        self.team_by_agent = team_by_agent
+        self.states: dict[str, HiddenState | None] = {}
+        self.episode_start: dict[str, bool] = {}
+
+    def runner_for(self, agent_id: str) -> PolicyRunner:
+        if self.team_by_agent[agent_id] == self.learner_team:
+            return self.learner_runner
+        return self.opponent_runner
 
     def reset(self) -> None:
-        self.player_buf.reset()
-        self.enemy_buf.reset()
+        for buf in self.agent_bufs.values():
+            buf.reset()
         self.states = {
-            "player": self.learner_runner.initial_state(),
-            "enemy": self.opponent_runner.initial_state(),
+            agent_id: self.runner_for(agent_id).initial_state()
+            for agent_id in self.controlled_agent_ids
         }
-        self.episode_start = {"player": True, "enemy": True}
+        self.episode_start = {agent_id: True for agent_id in self.controlled_agent_ids}
 
     def sample_actions(
         self,
         obs_by_agent: dict[str, np.ndarray],
     ) -> tuple[dict[str, int], dict[str, float], dict[str, float], dict[str, HiddenState | None]]:
-        player_action, player_logp, player_val, player_next_state = self.learner_runner.sample(
-            obs_by_agent["player"], self.states["player"]
-        )
-        enemy_action, enemy_logp, enemy_val, enemy_next_state = self.opponent_runner.sample(
-            obs_by_agent["enemy"], self.states["enemy"]
-        )
-        return (
-            {"player": player_action, "enemy": enemy_action},
-            {"player": player_logp, "enemy": enemy_logp},
-            {"player": player_val, "enemy": enemy_val},
-            {"player": player_next_state, "enemy": enemy_next_state},
-        )
+        sampled_actions: dict[str, int] = {}
+        sampled_logps: dict[str, float] = {}
+        sampled_vals: dict[str, float] = {}
+        next_states: dict[str, HiddenState | None] = {}
+        for agent_id in self.controlled_agent_ids:
+            runner = self.runner_for(agent_id)
+            action, logp, val, next_state = runner.sample(obs_by_agent[agent_id], self.states[agent_id])
+            sampled_actions[agent_id] = action
+            sampled_logps[agent_id] = logp
+            sampled_vals[agent_id] = val
+            next_states[agent_id] = next_state
+        return sampled_actions, sampled_logps, sampled_vals, next_states
 
     def store_step(
         self,
@@ -331,65 +359,43 @@ class SelfPlayCollector:
         rewards: dict[str, float],
         done: bool,
     ) -> dict[str, float]:
-        if isinstance(self.player_buf, RecurrentRolloutBuffer):
-            self.player_buf.add(
-                obs=obs_by_agent["player"],
-                act=sampled_actions["player"],
-                rew=rewards["player"],
-                done=done,
-                episode_start=self.episode_start["player"],
-                logp=sampled_logps["player"],
-                val=sampled_vals["player"],
-                state=self.states["player"],
-            )
-        else:
-            self.player_buf.add(
-                obs=obs_by_agent["player"],
-                act=sampled_actions["player"],
-                rew=rewards["player"],
-                done=done,
-                logp=sampled_logps["player"],
-                val=sampled_vals["player"],
-            )
-        if self.train_both_sides:
-            if isinstance(self.enemy_buf, RecurrentRolloutBuffer):
-                self.enemy_buf.add(
-                    obs=obs_by_agent["enemy"],
-                    act=sampled_actions["enemy"],
-                    rew=rewards["enemy"],
+        for agent_id in self.train_agent_ids:
+            buf = self.agent_bufs[agent_id]
+            if isinstance(buf, RecurrentRolloutBuffer):
+                buf.add(
+                    obs=obs_by_agent[agent_id],
+                    act=sampled_actions[agent_id],
+                    rew=rewards[agent_id],
                     done=done,
-                    episode_start=self.episode_start["enemy"],
-                    logp=sampled_logps["enemy"],
-                    val=sampled_vals["enemy"],
-                    state=self.states["enemy"],
+                    episode_start=self.episode_start[agent_id],
+                    logp=sampled_logps[agent_id],
+                    val=sampled_vals[agent_id],
+                    state=self.states[agent_id],
                 )
             else:
-                self.enemy_buf.add(
-                    obs=obs_by_agent["enemy"],
-                    act=sampled_actions["enemy"],
-                    rew=rewards["enemy"],
+                buf.add(
+                    obs=obs_by_agent[agent_id],
+                    act=sampled_actions[agent_id],
+                    rew=rewards[agent_id],
                     done=done,
-                    logp=sampled_logps["enemy"],
-                    val=sampled_vals["enemy"],
+                    logp=sampled_logps[agent_id],
+                    val=sampled_vals[agent_id],
                 )
-        self.states = {"player": next_states["player"], "enemy": next_states["enemy"]}
-        self.episode_start = {"player": False, "enemy": False}
+        self.states = {agent_id: next_states[agent_id] for agent_id in self.controlled_agent_ids}
+        self.episode_start = {agent_id: False for agent_id in self.controlled_agent_ids}
         if done:
             self.states = {
-                "player": self.learner_runner.initial_state(),
-                "enemy": self.opponent_runner.initial_state(),
+                agent_id: self.runner_for(agent_id).initial_state()
+                for agent_id in self.controlled_agent_ids
             }
-            self.episode_start = {"player": True, "enemy": True}
-        return {
-            "player": float(rewards["player"]),
-            "enemy": float(rewards["enemy"]),
-        }
+            self.episode_start = {agent_id: True for agent_id in self.controlled_agent_ids}
+        return {agent_id: float(rewards[agent_id]) for agent_id in self.train_agent_ids}
 
     def bootstrap_values(self, obs_by_agent: dict[str, np.ndarray]) -> dict[str, float]:
-        last_values = {"player": self.learner_runner.value(obs_by_agent["player"], self.states["player"])}
-        if self.train_both_sides:
-            last_values["enemy"] = self.opponent_runner.value(obs_by_agent["enemy"], self.states["enemy"])
-        return last_values
+        return {
+            agent_id: self.runner_for(agent_id).value(obs_by_agent[agent_id], self.states[agent_id])
+            for agent_id in self.train_agent_ids
+        }
 
     def finalize_rollouts(
         self,
@@ -399,12 +405,12 @@ class SelfPlayCollector:
         obs_by_agent: dict[str, np.ndarray],
     ) -> None:
         last_values = self.bootstrap_values(obs_by_agent)
-        self.player_buf.compute_gae(last_val=last_values["player"], gamma=gamma, lam=lam)
-        if self.train_both_sides:
-            self.enemy_buf.compute_gae(last_val=last_values["enemy"], gamma=gamma, lam=lam)
-            merge_self_play_buffers(train_buf, self.player_buf, self.enemy_buf)
+        for agent_id in self.train_agent_ids:
+            self.agent_bufs[agent_id].compute_gae(last_val=last_values[agent_id], gamma=gamma, lam=lam)
+        if len(self.train_agent_ids) == 1:
+            copy_buffer(train_buf, self.agent_bufs[self.train_agent_ids[0]])
         else:
-            copy_buffer(train_buf, self.player_buf)
+            merge_self_play_buffers(train_buf, self.agent_bufs, self.train_agent_ids)
 
 
 def run_rollout(
@@ -413,9 +419,10 @@ def run_rollout(
     cfg: PPOConfig,
     obs_by_agent: dict[str, np.ndarray],
     global_step: int,
-    episode_returns: dict[str, float],
+    episode_team_returns: dict[str, float],
     episode_stats: dict[str, list[float] | list[int]],
     phase: int,
+    learner_team: str,
 ) -> tuple[dict[str, np.ndarray], int, dict[str, float]]:
     for _ in range(cfg.rollout_steps):
         global_step += 1
@@ -430,22 +437,23 @@ def run_rollout(
             rewards=rewards,
             done=done,
         )
-        episode_returns["player"] += reward_delta["player"]
-        episode_returns["enemy"] += reward_delta["enemy"]
+        for team_id, value in info["team_rewards"].items():
+            episode_team_returns[team_id] += float(value)
         obs_by_agent = next_obs_by_agent
 
         if done:
             si = info["info"]
-            episode_stats["returns"].append(0.5 * (episode_returns["player"] + episode_returns["enemy"]))
-            episode_stats["player_returns"].append(episode_returns["player"])
-            episode_stats["enemy_returns"].append(episode_returns["enemy"])
-            episode_stats["player_wins"].append(int(si.player_win))
-            episode_stats["enemy_wins"].append(int(si.enemy_win))
+            opponent_return = sum(value for team_id, value in episode_team_returns.items() if team_id != learner_team)
+            episode_stats["returns"].append(sum(episode_team_returns.values()) / max(1, len(episode_team_returns)))
+            episode_stats["learner_returns"].append(episode_team_returns[learner_team])
+            episode_stats["opponent_returns"].append(opponent_return)
+            episode_stats["learner_wins"].append(int(si.team_wins.get(learner_team, False)))
+            episode_stats["opponent_wins"].append(int(si.winning_team is not None and si.winning_team != learner_team))
             episode_stats["draws"].append(int(si.draw))
             obs_by_agent = env.reset(phase=phase)
-            episode_returns = {"player": 0.0, "enemy": 0.0}
+            episode_team_returns = {team_id: 0.0 for team_id in env.team_ids()}
 
-    return obs_by_agent, global_step, episode_returns
+    return obs_by_agent, global_step, episode_team_returns
 
 
 def phase_ckpt_path(models_dir: Path, phase: int, suffix: str) -> Path:
@@ -467,12 +475,14 @@ def save_opponent_snapshot(
     act_dim: int,
     updates: int,
     phase: int,
+    agent_ids: tuple[str, ...],
+    layout: str,
     cfg: PPOConfig | None = None,
 ) -> Path:
     pool_dir = opponent_pool_dir(models_dir, phase)
     pool_dir.mkdir(parents=True, exist_ok=True)
     snapshot_path = opponent_snapshot_path(models_dir, phase, updates)
-    save_ckpt(snapshot_path, model, obs_dim, act_dim, updates, phase, cfg=cfg)
+    save_ckpt(snapshot_path, model, obs_dim, act_dim, updates, phase, agent_ids=agent_ids, layout=layout, cfg=cfg)
     return snapshot_path
 
 
@@ -483,13 +493,24 @@ def list_opponent_snapshots(models_dir: Path, phase: int) -> list[Path]:
     return sorted(path for path in pool_dir.glob("*.pt") if path.is_file())
 
 
-def list_compatible_opponent_snapshots(models_dir: Path, phase: int, obs_dim: int, act_dim: int) -> list[Path]:
+def list_compatible_opponent_snapshots(
+    models_dir: Path,
+    phase: int,
+    obs_dim: int,
+    act_dim: int,
+    layout: str,
+    agent_ids: tuple[str, ...],
+) -> list[Path]:
     compatible: list[Path] = []
     for path in list_opponent_snapshots(models_dir, phase):
         ckpt = torch.load(path, map_location="cpu")
         if int(ckpt.get("obs_dim", -1)) != obs_dim:
             continue
         if int(ckpt.get("act_dim", -1)) != act_dim:
+            continue
+        if str(ckpt.get("layout", "1v1")) != layout:
+            continue
+        if tuple(ckpt.get("agent_ids", [])) != agent_ids:
             continue
         compatible.append(path)
     return compatible
@@ -602,6 +623,8 @@ def maybe_make_pool_opponent_runner(
     phase: int,
     obs_dim: int,
     act_dim: int,
+    layout: str,
+    agent_ids: tuple[str, ...],
     device: torch.device,
     rng: np.random.Generator,
 ) -> tuple[PolicyRunner | None, str | None]:
@@ -612,7 +635,7 @@ def maybe_make_pool_opponent_runner(
     if rng.random() >= float(opponent_mix["pool_opponent_prob"]):
         return None, None
 
-    snapshots = list_compatible_opponent_snapshots(models_dir, phase, obs_dim, act_dim)
+    snapshots = list_compatible_opponent_snapshots(models_dir, phase, obs_dim, act_dim, layout, agent_ids)
     if not snapshots:
         return None, None
 
@@ -646,10 +669,12 @@ def build_best_eval_opponents(
     learner_runner: PolicyRunner,
     obs_dim: int,
     act_dim: int,
+    layout: str,
+    agent_ids: tuple[str, ...],
     device: torch.device,
 ) -> list[tuple[str, PolicyRunner]]:
     opponents: list[tuple[str, PolicyRunner]] = [("current_policy", learner_runner)]
-    snapshots = list_compatible_opponent_snapshots(models_dir, phase, obs_dim, act_dim)
+    snapshots = list_compatible_opponent_snapshots(models_dir, phase, obs_dim, act_dim, layout, agent_ids)
     if snapshots:
         latest_snapshot = snapshots[-1]
         opponent_model, _ = load_policy(str(latest_snapshot), device)
@@ -665,8 +690,18 @@ def evaluate_best_candidate(
     models_dir: Path,
     obs_dim: int,
     act_dim: int,
+    layout: str,
+    agent_ids: tuple[str, ...],
     device: torch.device,
 ) -> dict[str, float]:
+    if layout != "1v1":
+        return {
+            "score": 0.0,
+            "player_win_rate": 0.0,
+            "enemy_win_rate": 0.0,
+            "draw_rate": 0.0,
+            "avg_player_return": 0.0,
+        }
     env = TankEnv(w=15, h=15, max_steps=200, seed=0, wall_density=0.12)
     aggregate = {
         "score": 0.0,
@@ -681,6 +716,8 @@ def evaluate_best_candidate(
         learner_runner=learner_runner,
         obs_dim=obs_dim,
         act_dim=act_dim,
+        layout=layout,
+        agent_ids=agent_ids,
         device=device,
     )
     for _, opponent_runner in opponents:
@@ -712,6 +749,8 @@ def evaluate_phase_promotion(
     models_dir: Path,
     obs_dim: int,
     act_dim: int,
+    layout: str,
+    agent_ids: tuple[str, ...],
     device: torch.device,
 ) -> dict[str, float]:
     return evaluate_best_candidate(
@@ -722,6 +761,8 @@ def evaluate_phase_promotion(
         models_dir=models_dir,
         obs_dim=obs_dim,
         act_dim=act_dim,
+        layout=layout,
+        agent_ids=agent_ids,
         device=device,
     )
 
@@ -731,23 +772,31 @@ def run_training(args: argparse.Namespace) -> None:
     rng = np.random.default_rng(0)
     opponent_mix = resolve_opponent_mix(args)
 
-    env = TankEnv(w=15, h=15, max_steps=200, seed=0, wall_density=0.12)
+    env = TankEnv(w=15, h=15, max_steps=200, seed=0, wall_density=0.12, layout=args.layout)
     obs_by_agent = env.reset(phase=args.phase)
 
-    obs_dim = int(obs_by_agent["player"].shape[0])
+    agent_ids = tuple(env.agent_ids)
+    learner_team = env.team_of("player") if "player" in agent_ids else env.team_of(agent_ids[0])
+    obs_dim = int(obs_by_agent[agent_ids[0]].shape[0])
     act_dim = 6
     policy_arch = args.policy_arch
     if args.resume:
         policy_arch = infer_policy_arch_from_checkpoint(Path(args.resume))
 
-    model, cfg, algo, player_buf, enemy_buf, train_buf = make_algo(
+    model, cfg, algo = make_algo(
         device=device,
         obs_dim=obs_dim,
         act_dim=act_dim,
         policy_arch=policy_arch,
     )
-    learner_runner = PolicyRunner(model=model, device=device)
     train_both_sides = opponent_mix["mode"] != "fixed"
+    train_agent_ids = agent_ids if train_both_sides else tuple(agent_id for agent_id in agent_ids if env.team_of(agent_id) == learner_team)
+    agent_bufs = {
+        agent_id: make_rollout_buffer(model, cfg.rollout_steps, obs_dim, device)
+        for agent_id in train_agent_ids
+    }
+    train_buf = make_rollout_buffer(model, cfg.rollout_steps * len(train_agent_ids), obs_dim, device)
+    learner_runner = PolicyRunner(model=model, device=device)
     static_opponent_runner: PolicyRunner | None = None
     opponent_label = "current_policy"
     if args.opponent_checkpoint:
@@ -778,15 +827,15 @@ def run_training(args: argparse.Namespace) -> None:
 
     episode_stats: dict[str, list[Any]] = {
         "returns": [],
-        "player_wins": [],
-        "enemy_wins": [],
+        "learner_wins": [],
+        "opponent_wins": [],
         "draws": [],
-        "player_returns": [],
-        "enemy_returns": [],
+        "learner_returns": [],
+        "opponent_returns": [],
         "opponent_types": [],
     }
 
-    ep_ret = {"player": 0.0, "enemy": 0.0}
+    ep_ret = {team_id: 0.0 for team_id in env.team_ids()}
     global_step = 0
     phase_updates = 0
     best_eval_score = -float("inf")
@@ -799,6 +848,7 @@ def run_training(args: argparse.Namespace) -> None:
         f"min_updates_per_phase={args.min_updates_per_phase} | "
         f"opponent={'self_play' if train_both_sides else opponent_label} | "
         f"policy_arch={policy_arch} | "
+        f"layout={args.layout} | "
         f"snapshot_interval={args.snapshot_interval} | "
         f"mix_mode={opponent_mix['mode']} | "
         f"self_play_prob={opponent_mix['self_play_prob']:.2f} | "
@@ -824,6 +874,8 @@ def run_training(args: argparse.Namespace) -> None:
                     phase=phase,
                     obs_dim=obs_dim,
                     act_dim=act_dim,
+                    layout=args.layout,
+                    agent_ids=agent_ids,
                     device=device,
                     rng=rng,
                 )
@@ -840,9 +892,11 @@ def run_training(args: argparse.Namespace) -> None:
             collector = SelfPlayCollector(
                 learner_runner=learner_runner,
                 opponent_runner=round_opponent_runner or learner_runner,
-                player_buf=player_buf,
-                enemy_buf=enemy_buf,
-                train_both_sides=round_train_both_sides,
+                agent_bufs=agent_bufs,
+                train_agent_ids=agent_ids if round_train_both_sides else tuple(agent_id for agent_id in agent_ids if env.team_of(agent_id) == learner_team),
+                controlled_agent_ids=agent_ids,
+                learner_team=learner_team,
+                team_by_agent={agent_id: env.team_of(agent_id) for agent_id in agent_ids},
             )
             collector.reset()
             # Record which opponent regime drove this update so training logs show actual league mix.
@@ -853,9 +907,10 @@ def run_training(args: argparse.Namespace) -> None:
                 cfg=cfg,
                 obs_by_agent=obs_by_agent,
                 global_step=global_step,
-                episode_returns=ep_ret,
+                episode_team_returns=ep_ret,
                 episode_stats=episode_stats,
                 phase=phase,
+                learner_team=learner_team,
             )
             collector.finalize_rollouts(train_buf=train_buf, gamma=cfg.gamma, lam=cfg.lam, obs_by_agent=obs_by_agent)
 
@@ -864,11 +919,11 @@ def run_training(args: argparse.Namespace) -> None:
             phase_updates += 1
 
             mean_ret10 = float(np.mean(episode_stats["returns"][-10:])) if episode_stats["returns"] else 0.0
-            wr100 = float(np.mean(episode_stats["player_wins"][-100:])) if episode_stats["player_wins"] else 0.0
-            lr100 = float(np.mean(episode_stats["enemy_wins"][-100:])) if episode_stats["enemy_wins"] else 0.0
+            wr100 = float(np.mean(episode_stats["learner_wins"][-100:])) if episode_stats["learner_wins"] else 0.0
+            lr100 = float(np.mean(episode_stats["opponent_wins"][-100:])) if episode_stats["opponent_wins"] else 0.0
             dr100 = float(np.mean(episode_stats["draws"][-100:])) if episode_stats["draws"] else 0.0
-            player_ret10 = float(np.mean(episode_stats["player_returns"][-10:])) if episode_stats["player_returns"] else 0.0
-            enemy_ret10 = float(np.mean(episode_stats["enemy_returns"][-10:])) if episode_stats["enemy_returns"] else 0.0
+            player_ret10 = float(np.mean(episode_stats["learner_returns"][-10:])) if episode_stats["learner_returns"] else 0.0
+            enemy_ret10 = float(np.mean(episode_stats["opponent_returns"][-10:])) if episode_stats["opponent_returns"] else 0.0
             recent_opponents = episode_stats["opponent_types"][-20:]
             self_play_rate20 = (
                 sum(1 for value in recent_opponents if value == "self_play") / len(recent_opponents)
@@ -900,6 +955,8 @@ def run_training(args: argparse.Namespace) -> None:
                     act_dim,
                     total_updates,
                     phase,
+                    agent_ids=agent_ids,
+                    layout=args.layout,
                     cfg=cfg,
                 )
 
@@ -912,6 +969,8 @@ def run_training(args: argparse.Namespace) -> None:
                     act_dim=act_dim,
                     updates=total_updates,
                     phase=phase,
+                    agent_ids=agent_ids,
+                    layout=args.layout,
                     cfg=cfg,
                 )
                 print(f"Saved opponent snapshot {snapshot_path}")
@@ -934,6 +993,8 @@ def run_training(args: argparse.Namespace) -> None:
                     models_dir=models_dir,
                     obs_dim=obs_dim,
                     act_dim=act_dim,
+                    layout=args.layout,
+                    agent_ids=agent_ids,
                     device=device,
                 )
                 print(
@@ -953,6 +1014,8 @@ def run_training(args: argparse.Namespace) -> None:
                         act_dim,
                         total_updates,
                         phase,
+                        agent_ids=agent_ids,
+                        layout=args.layout,
                         cfg=cfg,
                     )
                 promotion_eval_player_wr = eval_metrics["player_win_rate"]
@@ -973,6 +1036,8 @@ def run_training(args: argparse.Namespace) -> None:
                     models_dir=models_dir,
                     obs_dim=obs_dim,
                     act_dim=act_dim,
+                    layout=args.layout,
+                    agent_ids=agent_ids,
                     device=device,
                 )
                 promotion_eval_player_wr = promotion_metrics["player_win_rate"]
@@ -993,6 +1058,8 @@ def run_training(args: argparse.Namespace) -> None:
                     act_dim,
                     total_updates,
                     phase,
+                    agent_ids=agent_ids,
+                    layout=args.layout,
                     cfg=cfg,
                 )
                 current_phase += 1
@@ -1001,7 +1068,7 @@ def run_training(args: argparse.Namespace) -> None:
                 promotion_eval_player_wr = 0.0
                 for values in episode_stats.values():
                     values.clear()
-                ep_ret = {"player": 0.0, "enemy": 0.0}
+                ep_ret = {team_id: 0.0 for team_id in env.team_ids()}
                 obs_by_agent = env.reset(phase=current_phase)
                 print(
                     f"Promoted to phase={current_phase} after "
@@ -1017,6 +1084,8 @@ def run_training(args: argparse.Namespace) -> None:
             act_dim,
             total_updates,
             current_phase,
+            agent_ids=agent_ids,
+            layout=args.layout,
             cfg=cfg,
         )
         print(f"Saved {phase_ckpt_path(models_dir, current_phase, 'last')}")
