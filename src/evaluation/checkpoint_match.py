@@ -1,26 +1,58 @@
 import argparse
 from pathlib import Path
+from typing import Any
 
 import torch
 
-from src.agents.policy import ActorCritic
+from src.agents.policy import ActorCritic, RecurrentActorCritic
 from src.env.tank_env import TankEnv
 
 
-def load_policy(model_path: str, device: torch.device) -> tuple[ActorCritic, dict]:
+PolicyModel = ActorCritic | RecurrentActorCritic
+
+
+def load_policy(model_path: str, device: torch.device) -> tuple[PolicyModel, dict]:
     ckpt = torch.load(model_path, map_location=device)
     obs_dim = int(ckpt["obs_dim"])
     act_dim = int(ckpt["act_dim"])
-    model = ActorCritic(obs_dim=obs_dim, act_dim=act_dim, hidden=128).to(device)
+    policy_type = ckpt.get("policy_type", "shared_policy")
+    if policy_type == "recurrent_shared_policy":
+        hidden = int(ckpt.get("hidden", 128))
+        recurrent_hidden = int(ckpt.get("recurrent_hidden", 128))
+        model = RecurrentActorCritic(
+            obs_dim=obs_dim,
+            act_dim=act_dim,
+            hidden=hidden,
+            recurrent_hidden=recurrent_hidden,
+        ).to(device)
+    else:
+        hidden = int(ckpt.get("hidden", 128))
+        model = ActorCritic(obs_dim=obs_dim, act_dim=act_dim, hidden=hidden).to(device)
     model.load_state_dict(ckpt["model"])
     model.eval()
     return model, ckpt
 
 
+def init_policy_runtime(model: PolicyModel, device: torch.device) -> dict[str, Any]:
+    if isinstance(model, RecurrentActorCritic):
+        return {"state": model.initial_state(batch_size=1, device=device)}
+    return {"state": None}
+
+
+def act_with_policy(model: PolicyModel, obs: torch.Tensor, runtime: dict[str, Any]) -> int:
+    if isinstance(model, RecurrentActorCritic):
+        action_t, _, _, next_state = model.act(obs, runtime["state"])
+        runtime["state"] = next_state
+        return int(action_t.item())
+
+    action_t, _, _ = model.act(obs)
+    return int(action_t.item())
+
+
 def run_match_series(
     env: TankEnv,
-    player_model: ActorCritic,
-    enemy_model: ActorCritic,
+    player_model: PolicyModel,
+    enemy_model: PolicyModel,
     episodes: int,
     device: torch.device,
     phase: int,
@@ -34,15 +66,17 @@ def run_match_series(
 
     for _ in range(episodes):
         obs_by_agent = env.reset(phase=phase)
+        runtimes = {
+            "player": init_policy_runtime(player_model, device),
+            "enemy": init_policy_runtime(enemy_model, device),
+        }
         done = False
 
         while not done:
             actions: dict[str, int] = {}
             for agent_id, model in (("player", player_model), ("enemy", enemy_model)):
                 obs_t = torch.as_tensor(obs_by_agent[agent_id], dtype=torch.float32, device=device).unsqueeze(0)
-                with torch.no_grad():
-                    action_t, _, _ = model.act(obs_t)
-                actions[agent_id] = int(action_t.item())
+                actions[agent_id] = act_with_policy(model, obs_t, runtimes[agent_id])
 
             obs_by_agent, rewards, done, info = env.step(actions)
             player_return += float(rewards["player"])

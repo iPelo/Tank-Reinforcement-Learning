@@ -4,9 +4,9 @@ import time
 import numpy as np
 import torch
 
-from src.env.tank_env import TankEnv
 from src.env.render import PygameRenderer
-from src.agents.policy import ActorCritic
+from src.env.tank_env import TankEnv
+from src.evaluation.checkpoint_match import act_with_policy, init_policy_runtime, load_policy
 
 
 def run_random(env: TankEnv, renderer: PygameRenderer | None, episodes: int, seed: int, phase: int) -> None:
@@ -61,17 +61,10 @@ def run_random(env: TankEnv, renderer: PygameRenderer | None, episodes: int, see
 
 def run_model(env: TankEnv, renderer: PygameRenderer | None, episodes: int, model_path: str, phase: int) -> None:
     device = torch.device("cpu")
-    ckpt = torch.load(model_path, map_location=device)
-
-    obs_dim = int(ckpt["obs_dim"])
-    act_dim = int(ckpt["act_dim"])
+    model, ckpt = load_policy(model_path, device)
     training_mode = ckpt.get("training_mode", "unknown")
     checkpoint_version = ckpt.get("checkpoint_version", 1)
     policy_type = ckpt.get("policy_type", "unknown")
-
-    model = ActorCritic(obs_dim=obs_dim, act_dim=act_dim, hidden=128).to(device)
-    model.load_state_dict(ckpt["model"])
-    model.eval()
 
     print(
         f"Loaded checkpoint: mode={training_mode} policy={policy_type} "
@@ -85,6 +78,10 @@ def run_model(env: TankEnv, renderer: PygameRenderer | None, episodes: int, mode
 
     for ep in range(episodes):
         obs_by_agent = env.reset(phase=phase)
+        runtimes = {
+            "player": init_policy_runtime(model, device),
+            "enemy": init_policy_runtime(model, device),
+        }
         returns = {"player": 0.0, "enemy": 0.0}
         done = False
 
@@ -92,9 +89,7 @@ def run_model(env: TankEnv, renderer: PygameRenderer | None, episodes: int, mode
             actions: dict[str, int] = {}
             for agent_id in ("player", "enemy"):
                 obs_t = torch.as_tensor(obs_by_agent[agent_id], dtype=torch.float32, device=device).unsqueeze(0)
-                with torch.no_grad():
-                    action_t, _, _ = model.act(obs_t)
-                actions[agent_id] = int(action_t.item())
+                actions[agent_id] = act_with_policy(model, obs_t, runtimes[agent_id])
 
             obs_by_agent, rewards, done, info = env.step(actions)
             returns["player"] += float(rewards["player"])
