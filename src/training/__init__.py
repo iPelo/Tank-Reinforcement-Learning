@@ -1,4 +1,11 @@
-from .buffer import RolloutBatch, RolloutBuffer
+from .buffer import RecurrentRolloutBatch, RecurrentRolloutBuffer, RolloutBatch, RolloutBuffer
 from .ppo import PPO, PPOConfig
 
-__all__ = ["RolloutBatch", "RolloutBuffer", "PPO", "PPOConfig"]
+__all__ = [
+    "RecurrentRolloutBatch",
+    "RecurrentRolloutBuffer",
+    "RolloutBatch",
+    "RolloutBuffer",
+    "PPO",
+    "PPOConfig",
+]
