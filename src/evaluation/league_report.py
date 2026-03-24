@@ -40,12 +40,13 @@ def build_league_report(current_model_path: str, episodes: int, phase: int, seed
     current_path = Path(current_model_path)
 
     player_model, player_ckpt = load_policy(str(current_path), device)
+    layout = str(player_ckpt.get("layout", "1v1"))
     opponents = resolve_report_opponents(current_path, phase, rng)
 
     report_rows: list[dict[str, object]] = []
     for label, opponent_path in opponents:
         enemy_model, enemy_ckpt = load_policy(str(opponent_path), device)
-        env = TankEnv(w=15, h=15, max_steps=200, seed=0, wall_density=0.12)
+        env = TankEnv(w=15, h=15, max_steps=200, seed=0, wall_density=0.12, layout=layout)
         metrics = run_match_series(
             env=env,
             player_model=player_model,
@@ -61,6 +62,7 @@ def build_league_report(current_model_path: str, episodes: int, phase: int, seed
                 "player_updates": player_ckpt.get("updates", 0),
                 "enemy": opponent_path.name,
                 "enemy_updates": enemy_ckpt.get("updates", 0),
+                "layout": layout,
                 "metrics": metrics,
             }
         )
@@ -93,12 +95,16 @@ def main() -> None:
         assert isinstance(metrics, dict)
         print(
             f"{row['label']}: "
+            f"layout={row['layout']} "
             f"player={row['player']}@{row['player_updates']} "
             f"enemy={row['enemy']}@{row['enemy_updates']} "
             f"player_wr={metrics['player_win_rate']:.2f} "
             f"enemy_wr={metrics['enemy_win_rate']:.2f} "
+            f"blue_wr={metrics['blue_team_win_rate']:.2f} "
+            f"red_wr={metrics['red_team_win_rate']:.2f} "
             f"draw_rate={metrics['draw_rate']:.2f} "
             f"avg_player_return={metrics['avg_player_return']:.3f} "
+            f"avg_blue_return={metrics['avg_blue_team_return']:.3f} "
             f"avg_steps={metrics['avg_steps']:.1f}"
         )
 

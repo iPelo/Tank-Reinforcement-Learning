@@ -11,51 +11,48 @@ from src.evaluation.checkpoint_match import act_with_policy, init_policy_runtime
 
 def run_random(env: TankEnv, renderer: PygameRenderer | None, episodes: int, seed: int, phase: int) -> None:
     rng = np.random.default_rng(seed)
-    player_wins: list[int] = []
-    enemy_wins: list[int] = []
+    blue_wins: list[int] = []
+    red_wins: list[int] = []
     draws: list[int] = []
 
     for ep in range(episodes):
         _ = env.reset(phase=phase)
-        returns = {"player": 0.0, "enemy": 0.0}
+        returns = {team_id: 0.0 for team_id in env.team_ids()}
         done = False
 
         while not done:
-            actions = {
-                "player": int(rng.integers(0, 6)),
-                "enemy": int(rng.integers(0, 6)),
-            }
-            _, rewards, done, info = env.step(actions)
-            returns["player"] += float(rewards["player"])
-            returns["enemy"] += float(rewards["enemy"])
+            actions = {agent_id: int(rng.integers(0, 6)) for agent_id in env.agent_ids}
+            _, _, done, info = env.step(actions)
+            for team_id, reward in info["team_rewards"].items():
+                returns[team_id] += float(reward)
 
             if renderer is not None:
                 si = info["info"]
                 renderer.render(
                     env,
                     text=(
-                        f"RAND ep={ep} steps={si.steps} "
-                        f"Rp={returns['player']:.2f} Re={returns['enemy']:.2f}"
+                        f"RAND {env.layout_name} ep={ep} steps={si.steps} "
+                        f"Rb={returns.get('blue', 0.0):.2f} Rr={returns.get('red', 0.0):.2f}"
                     ),
                 )
 
         si = info["info"]
-        player_wins.append(int(si.player_win))
-        enemy_wins.append(int(si.enemy_win))
+        blue_wins.append(int(si.team_wins.get("blue", False)))
+        red_wins.append(int(si.team_wins.get("red", False)))
         draws.append(int(si.draw))
-        if len(player_wins) > 100:
-            player_wins.pop(0)
-            enemy_wins.pop(0)
+        if len(blue_wins) > 100:
+            blue_wins.pop(0)
+            red_wins.pop(0)
             draws.pop(0)
-        wr = sum(player_wins) / len(player_wins)
-        lr = sum(enemy_wins) / len(enemy_wins)
+        wr = sum(blue_wins) / len(blue_wins)
+        lr = sum(red_wins) / len(red_wins)
         dr = sum(draws) / len(draws)
 
         print(
-            f"RAND EP {ep:03d} | steps={si.steps:3d} "
-            f"| Rp={returns['player']:6.2f} Re={returns['enemy']:6.2f} "
-            f"| player_win={si.player_win} enemy_win={si.enemy_win} draw={si.draw}"
-            f"| last100_pwr={wr:.2f} ewr={lr:.2f} dr={dr:.2f}"
+            f"RAND {env.layout_name} EP {ep:03d} | steps={si.steps:3d} "
+            f"| Rb={returns.get('blue', 0.0):6.2f} Rr={returns.get('red', 0.0):6.2f} "
+            f"| blue_win={si.team_wins.get('blue', False)} red_win={si.team_wins.get('red', False)} draw={si.draw}"
+            f"| last100_bwr={wr:.2f} rwr={lr:.2f} dr={dr:.2f}"
         )
 
 
@@ -72,56 +69,53 @@ def run_model(env: TankEnv, renderer: PygameRenderer | None, episodes: int, mode
         f"ckpt_v={checkpoint_version}"
     )
 
-    player_wins: list[int] = []
-    enemy_wins: list[int] = []
+    blue_wins: list[int] = []
+    red_wins: list[int] = []
     draws: list[int] = []
 
     for ep in range(episodes):
         obs_by_agent = env.reset(phase=phase)
-        runtimes = {
-            "player": init_policy_runtime(model, device),
-            "enemy": init_policy_runtime(model, device),
-        }
-        returns = {"player": 0.0, "enemy": 0.0}
+        runtimes = {agent_id: init_policy_runtime(model, device) for agent_id in env.agent_ids}
+        returns = {team_id: 0.0 for team_id in env.team_ids()}
         done = False
 
         while not done:
             actions: dict[str, int] = {}
-            for agent_id in ("player", "enemy"):
+            for agent_id in env.agent_ids:
                 obs_t = torch.as_tensor(obs_by_agent[agent_id], dtype=torch.float32, device=device).unsqueeze(0)
                 actions[agent_id] = act_with_policy(model, obs_t, runtimes[agent_id])
 
-            obs_by_agent, rewards, done, info = env.step(actions)
-            returns["player"] += float(rewards["player"])
-            returns["enemy"] += float(rewards["enemy"])
+            obs_by_agent, _, done, info = env.step(actions)
+            for team_id, reward in info["team_rewards"].items():
+                returns[team_id] += float(reward)
 
             if renderer is not None:
                 si = info["info"]
                 renderer.render(
                     env,
                     text=(
-                        f"PPO ep={ep} steps={si.steps} "
-                        f"Rp={returns['player']:.2f} Re={returns['enemy']:.2f}"
+                        f"PPO {env.layout_name} ep={ep} steps={si.steps} "
+                        f"Rb={returns.get('blue', 0.0):.2f} Rr={returns.get('red', 0.0):.2f}"
                     ),
                 )
 
         si = info["info"]
-        player_wins.append(int(si.player_win))
-        enemy_wins.append(int(si.enemy_win))
+        blue_wins.append(int(si.team_wins.get("blue", False)))
+        red_wins.append(int(si.team_wins.get("red", False)))
         draws.append(int(si.draw))
-        if len(player_wins) > 100:
-            player_wins.pop(0)
-            enemy_wins.pop(0)
+        if len(blue_wins) > 100:
+            blue_wins.pop(0)
+            red_wins.pop(0)
             draws.pop(0)
-        wr = sum(player_wins) / len(player_wins)
-        lr = sum(enemy_wins) / len(enemy_wins)
+        wr = sum(blue_wins) / len(blue_wins)
+        lr = sum(red_wins) / len(red_wins)
         dr = sum(draws) / len(draws)
 
         print(
-            f"PPO  EP {ep:03d} | steps={si.steps:3d} "
-            f"| Rp={returns['player']:6.2f} Re={returns['enemy']:6.2f} "
-            f"| player_win={si.player_win} enemy_win={si.enemy_win} draw={si.draw}"
-            f"| last100_pwr={wr:.2f} ewr={lr:.2f} dr={dr:.2f}"
+            f"PPO {env.layout_name} EP {ep:03d} | steps={si.steps:3d} "
+            f"| Rb={returns.get('blue', 0.0):6.2f} Rr={returns.get('red', 0.0):6.2f} "
+            f"| blue_win={si.team_wins.get('blue', False)} red_win={si.team_wins.get('red', False)} draw={si.draw}"
+            f"| last100_bwr={wr:.2f} rwr={lr:.2f} dr={dr:.2f}"
         )
 
 
@@ -131,9 +125,10 @@ def main() -> None:
     ap.add_argument("--phase", type=int, default=2, choices=(0, 1, 2))
     ap.add_argument("--render", action="store_true")
     ap.add_argument("--model", type=str, default="")
+    ap.add_argument("--layout", type=str, default="1v1", choices=("1v1", "1v2", "2v2"))
     args = ap.parse_args()
 
-    env = TankEnv(w=15, h=15, max_steps=200, seed=0, wall_density=0.12)
+    env = TankEnv(w=15, h=15, max_steps=200, seed=0, wall_density=0.12, layout=args.layout)
     renderer = PygameRenderer(cell_size=32, fps=20) if args.render else None
 
     try:
