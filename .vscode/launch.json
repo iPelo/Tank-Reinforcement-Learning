@@ -76,6 +76,25 @@
       ],
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Validate Baseline",
+      "type": "python",
+      "request": "launch",
+      "python": "${workspaceFolder}/.venv/bin/python",
+      "module": "src.scripts.validate_baseline",
+      "args": [
+        "--candidate-model",
+        "src/scripts/models/ppo_phase2_last.pt",
+        "--baseline-model",
+        "src/scripts/models/ppo_phase2_best.pt",
+        "--phase",
+        "2",
+        "--episodes",
+        "12"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}"
     }
   ]
 }
