@@ -23,11 +23,43 @@ class LastSeenInfo:
     dy: float = 0.0
     age: int = -1
 
+
+@dataclass(frozen=True)
+class LayoutSpec:
+    name: str
+    agent_ids: tuple[AgentId, ...]
+    teams: Dict[AgentId, str]
+    spawn_presets: tuple[Dict[AgentId, Coord], ...]
+
 class TankEnv:
-    DEFAULT_AGENT_IDS: tuple[AgentId, AgentId] = ("player", "enemy")
-    DEFAULT_TEAMS: Dict[AgentId, str] = {
-        "player": "blue",
-        "enemy": "red",
+    LAYOUTS: Dict[str, LayoutSpec] = {
+        "1v1": LayoutSpec(
+            name="1v1",
+            agent_ids=("player", "enemy"),
+            teams={"player": "blue", "enemy": "red"},
+            spawn_presets=(
+                {"player": (2, 2), "enemy": (12, 12)},
+                {"player": (2, 12), "enemy": (12, 2)},
+            ),
+        ),
+        "1v2": LayoutSpec(
+            name="1v2",
+            agent_ids=("player", "enemy_1", "enemy_2"),
+            teams={"player": "blue", "enemy_1": "red", "enemy_2": "red"},
+            spawn_presets=(
+                {"player": (2, 7), "enemy_1": (12, 3), "enemy_2": (12, 11)},
+                {"player": (3, 3), "enemy_1": (11, 3), "enemy_2": (11, 11)},
+            ),
+        ),
+        "2v2": LayoutSpec(
+            name="2v2",
+            agent_ids=("player", "ally", "enemy_1", "enemy_2"),
+            teams={"player": "blue", "ally": "blue", "enemy_1": "red", "enemy_2": "red"},
+            spawn_presets=(
+                {"player": (2, 4), "ally": (2, 10), "enemy_1": (12, 4), "enemy_2": (12, 10)},
+                {"player": (4, 2), "ally": (10, 2), "enemy_1": (4, 12), "enemy_2": (10, 12)},
+            ),
+        ),
     }
 
     def __init__(
@@ -39,6 +71,8 @@ class TankEnv:
         wall_density: float = 0.12,
         cooldown_steps: int = 5,
         ray_limit:Optional[int] = None,
+        layout: str = "1v1",
+        spawn_mode: str = "random",
     ) -> None:
         self.w = int(w)
         self.h = int(h)
@@ -46,7 +80,14 @@ class TankEnv:
         self.wall_density = float(wall_density)
         self.cooldown_steps = int(cooldown_steps)
         self.ray_limit = int(ray_limit) if ray_limit is not None else max(self.w, self.h)
-        self.agent_ids = self.DEFAULT_AGENT_IDS
+        if layout not in self.LAYOUTS:
+            raise ValueError(f"Unknown layout: {layout}")
+        if spawn_mode not in {"random", "preset"}:
+            raise ValueError(f"Unknown spawn_mode: {spawn_mode}")
+        self.layout_name = layout
+        self.layout = self.LAYOUTS[layout]
+        self.spawn_mode = spawn_mode
+        self.agent_ids = self.layout.agent_ids
 
         self.rng = np.random.default_rng(seed)
         self.state: Optional[EnvState] = None
@@ -69,12 +110,14 @@ class TankEnv:
         return self.state.tanks[agent_id]
 
     def team_of(self, agent_id: AgentId) -> str:
-        assert self.state is not None
-        return self.state.teams[agent_id]
+        if self.state is not None:
+            return self.state.teams[agent_id]
+        return self.layout.teams[agent_id]
 
     def team_ids(self) -> tuple[str, ...]:
-        assert self.state is not None
-        return tuple(dict.fromkeys(self.state.teams.values()))
+        if self.state is not None:
+            return tuple(dict.fromkeys(self.state.teams.values()))
+        return tuple(dict.fromkeys(self.layout.teams.values()))
 
     def allies_of(self, agent_id: AgentId) -> tuple[AgentId, ...]:
         team_id = self.team_of(agent_id)
@@ -115,52 +158,85 @@ class TankEnv:
                 q.append((nx,ny))
         return  False
 
+    def available_layouts(self) -> tuple[str, ...]:
+        return tuple(self.LAYOUTS.keys())
+
+    def _random_spawn_positions(self) -> Dict[AgentId, Coord]:
+        positions: Dict[AgentId, Coord] = {}
+        taken: Set[Coord] = set()
+        for agent_id in self.agent_ids:
+            while True:
+                candidate = (
+                    int(self.rng.integers(1, self.w - 1)),
+                    int(self.rng.integers(1, self.h - 1)),
+                )
+                if candidate in taken:
+                    continue
+                positions[agent_id] = candidate
+                taken.add(candidate)
+                break
+        return positions
+
+    def _sample_spawn_positions(self) -> Dict[AgentId, Coord]:
+        if self.spawn_mode == "preset" and self.layout.spawn_presets:
+            idx = int(self.rng.integers(0, len(self.layout.spawn_presets)))
+            return dict(self.layout.spawn_presets[idx])
+        return self._random_spawn_positions()
+
+    def _spawn_tanks(self, positions: Dict[AgentId, Coord]) -> Dict[AgentId, Tank]:
+        tanks: Dict[AgentId, Tank] = {}
+        for agent_id in self.agent_ids:
+            x, y = positions[agent_id]
+            tanks[agent_id] = Tank(
+                x=x,
+                y=y,
+                dir=Direction(int(self.rng.integers(0, 4))),
+                cooldown=0,
+                team_id=self.layout.teams[agent_id],
+            )
+        return tanks
+
+    def _spawn_forbidden_cells(self, positions: Dict[AgentId, Coord]) -> Set[Coord]:
+        forbidden: Set[Coord] = set()
+        for x, y in positions.values():
+            forbidden.update(
+                {
+                    (x, y),
+                    (x + 1, y),
+                    (x - 1, y),
+                    (x, y + 1),
+                    (x, y - 1),
+                }
+            )
+        return forbidden
+
+    def _all_opponents_reachable(self, tanks: Dict[AgentId, Tank], walls: Set[Coord]) -> bool:
+        for agent_id in self.agent_ids:
+            start = (tanks[agent_id].x, tanks[agent_id].y)
+            for opponent_id in self.opponents_of(agent_id):
+                goal = (tanks[opponent_id].x, tanks[opponent_id].y)
+                if not self._reachable(start, goal, walls):
+                    return False
+        return True
+
     def reset(self, phase: int = 0) -> Dict[AgentId, np.ndarray]:
         phase = int(phase)
 
         while True:
-            player = Tank(
-                x=int(self.rng.integers(1, self.w - 1)),
-                y=int(self.rng.integers(1, self.h - 1)),
-                dir=Direction(int(self.rng.integers(0,4))),
-                cooldown=0,
-                team_id=self.DEFAULT_TEAMS["player"],
-            )
-            enemy = Tank(
-                x=int(self.rng.integers(1, self.w - 1)),
-                y=int(self.rng.integers(1, self.h - 1)),
-                dir=Direction(int(self.rng.integers(0,4))),
-                cooldown=0,
-                team_id=self.DEFAULT_TEAMS["enemy"],
-            )
-
-            if (player.x, player.y) == (enemy.x, enemy.y):
-                continue
-
-            forbidden = {
-                (player.x, player.y),
-                (enemy.x, enemy.y),
-                (player.x + 1, player.y),
-                (player.x - 1, player.y),
-                (player.x, player.y + 1),
-                (player.x, player.y - 1),
-                (enemy.x + 1, enemy.y),
-                (enemy.x - 1, enemy.y),
-                (enemy.x, enemy.y + 1),
-                (enemy.x, enemy.y - 1),
-            }
-
+            positions = self._sample_spawn_positions()
+            tanks = self._spawn_tanks(positions)
+            forbidden = self._spawn_forbidden_cells(positions)
             walls = generate_walls(self.w, self.h, self.wall_density, self.rng, forbidden=forbidden)
 
-            if not self._reachable((player.x, player.y), (enemy.x, enemy.y), walls):
+            if not self._all_opponents_reachable(tanks, walls):
                 continue
 
-            if (player.x, player.y) in walls or (enemy.x, enemy.y) in walls:
+            if any((tank.x, tank.y) in walls for tank in tanks.values()):
                 continue
 
             self.state = EnvState(
-                tanks={"player": player, "enemy": enemy},
-                teams=dict(self.DEFAULT_TEAMS),
+                tanks=tanks,
+                teams=dict(self.layout.teams),
                 walls=walls,
                 steps=0,
                 phase=phase,
@@ -180,80 +256,76 @@ class TankEnv:
 
         s = self.state
         s.steps += 1
-        player_action = Action(int(actions["player"]))
-        enemy_action = Action(int(actions["enemy"]))
-        player = self._tank("player")
-        enemy = self._tank("enemy")
+        action_by_agent = {
+            agent_id: Action(int(actions.get(agent_id, Action.NOOP)))
+            for agent_id in self.agent_ids
+        }
 
         if self.last_shot_ttl > 0:
             self.last_shot_ttl -= 1
             if self.last_shot_ttl == 0:
                 self.last_shot = None
 
-        current_shots: Dict[str, Tuple[int, int, int, int, bool]] = {}
-        player_hit = False
-        enemy_hit = False
         done = False
 
         for tank in s.tanks.values():
             if tank.cooldown > 0:
                 tank.cooldown -= 1
 
-        self._apply_turn(player, player_action)
-        self._apply_turn(enemy, enemy_action)
-        self._apply_moves(player_action, enemy_action)
+        for agent_id, action in action_by_agent.items():
+            self._apply_turn(self._tank(agent_id), action)
+        self._apply_moves(action_by_agent)
 
+        current_shots: Dict[str, Tuple[int, int, int, int, bool]] = {}
+        hit_targets: Set[AgentId] = set()
+        shooter_hits = {agent_id: False for agent_id in self.agent_ids}
         if s.phase >= 1:
-            player_hit = self._resolve_shot(current_shots, "player", player, enemy, player_action)
-            enemy_hit = self._resolve_shot(current_shots, "enemy", enemy, player, enemy_action)
+            hit_targets, shooter_hits = self._resolve_shots(current_shots, action_by_agent)
 
-        if enemy_hit:
-            enemy.alive = False
-        if player_hit:
-            player.alive = False
+        for target_id in hit_targets:
+            self._tank(target_id).alive = False
 
-        agent_hits = {
-            "player": bool(enemy_hit),
-            "enemy": bool(player_hit),
-        }
-        agent_alive = {
-            agent_id: self._tank(agent_id).alive
-            for agent_id in self.agent_ids
-        }
-        player_win = enemy_hit and not player_hit
-        enemy_win = player_hit and not enemy_hit
-        draw = player_hit and enemy_hit
-        agent_wins = {
-            "player": bool(player_win),
-            "enemy": bool(enemy_win),
-        }
-        team_wins = {
-            self.team_of("player"): bool(player_win),
-            self.team_of("enemy"): bool(enemy_win),
-        }
-
-        if not player.alive or not enemy.alive:
+        team_alive_counts = self._team_alive_counts()
+        surviving_teams = [team_id for team_id, count in team_alive_counts.items() if count > 0]
+        winning_team = surviving_teams[0] if len(surviving_teams) == 1 else None
+        if len(surviving_teams) <= 1:
             done = True
 
         if s.steps >= self.max_steps:
             done = True
 
-        rewards = {
-            "player": self._reward_for_side(
-                action=player_action,
-                win=player_win,
-                loss=enemy_win,
-                draw=draw,
-                phase=s.phase,
-            ),
-            "enemy": self._reward_for_side(
-                action=enemy_action,
-                win=enemy_win,
-                loss=player_win,
-                draw=draw,
-                phase=s.phase,
-            ),
+        draw = bool(done and winning_team is None)
+        agent_hits = {
+            agent_id: bool(shooter_hits[agent_id])
+            for agent_id in self.agent_ids
         }
+        agent_alive = {
+            agent_id: self._tank(agent_id).alive
+            for agent_id in self.agent_ids
+        }
+        agent_wins = {
+            agent_id: bool(winning_team is not None and self.team_of(agent_id) == winning_team)
+            for agent_id in self.agent_ids
+        }
+        team_wins = {
+            team_id: bool(team_id == winning_team)
+            for team_id in self.team_ids()
+        }
+        rewards = {
+            agent_id: self._reward_for_side(
+                action=action_by_agent[agent_id],
+                win=agent_wins[agent_id],
+                loss=bool(winning_team is not None and self.team_of(agent_id) != winning_team),
+                draw=draw,
+                phase=s.phase,
+            )
+            for agent_id in self.agent_ids
+        }
+
+        player_win = agent_wins.get("player", False)
+        enemy_win = agent_wins.get("enemy", False)
+        player_hit = bool("player" in hit_targets)
+        enemy_hit = bool("enemy" in hit_targets)
 
         info = StepInfo(
             player_win=player_win,
@@ -267,13 +339,14 @@ class TankEnv:
             agent_hits=agent_hits,
             agent_alive=agent_alive,
             team_wins=team_wins,
-            team_alive_counts=self._team_alive_counts(),
+            team_alive_counts=team_alive_counts,
+            winning_team=winning_team,
         )
         if current_shots:
             self.last_shot = current_shots
             self.last_shot_ttl = 6
 
-        self._update_memory(player_hit=player_hit, enemy_hit=enemy_hit, current_shots=current_shots)
+        self._update_memory(hit_targets=hit_targets, shooter_hits=shooter_hits, current_shots=current_shots)
 
         team_rewards: Dict[str, float] = {}
         for agent_id, reward in rewards.items():
@@ -292,10 +365,7 @@ class TankEnv:
             "agent_done": {agent_id: bool(done) for agent_id in self.agent_ids},
             "team_done": {team_id: bool(done) for team_id in self.team_ids()},
             "team_obs": self.team_observe_all(),
-            "actions": {
-                "player": player_action,
-                "enemy": enemy_action,
-            },
+            "actions": action_by_agent,
         }
 
     def _in_bounds(self, x:int,y:int) -> bool:
@@ -319,49 +389,58 @@ class TankEnv:
             dx, dy = -dx, -dy
         return tank.x + dx, tank.y + dy
 
-    def _apply_moves(self, player_action: Action, enemy_action: Action) -> None:
+    def _apply_moves(self, action_by_agent: Dict[AgentId, Action]) -> None:
         assert self.state is not None
-        player = self._tank("player")
-        enemy = self._tank("enemy")
+        current_positions = {
+            agent_id: (self._tank(agent_id).x, self._tank(agent_id).y)
+            for agent_id in self.agent_ids
+        }
+        desired_positions = dict(current_positions)
 
-        player_next = (player.x, player.y)
-        enemy_next = (enemy.x, enemy.y)
+        for agent_id, action in action_by_agent.items():
+            tank = self._tank(agent_id)
+            if not tank.alive:
+                continue
+            if action == Action.FWD:
+                desired_positions[agent_id] = self._move_target(tank, True)
+            elif action == Action.BWD:
+                desired_positions[agent_id] = self._move_target(tank, False)
+            if self._is_wall(*desired_positions[agent_id]):
+                desired_positions[agent_id] = current_positions[agent_id]
 
-        if player_action == Action.FWD:
-            player_next = self._move_target(player, True)
-        elif player_action == Action.BWD:
-            player_next = self._move_target(player, False)
+        for agent_id in self.agent_ids:
+            for other_id in self.agent_ids:
+                if agent_id >= other_id:
+                    continue
+                if desired_positions[agent_id] == desired_positions[other_id]:
+                    desired_positions[agent_id] = current_positions[agent_id]
+                    desired_positions[other_id] = current_positions[other_id]
+                elif (
+                    desired_positions[agent_id] == current_positions[other_id]
+                    and desired_positions[other_id] == current_positions[agent_id]
+                ):
+                    desired_positions[agent_id] = current_positions[agent_id]
+                    desired_positions[other_id] = current_positions[other_id]
 
-        if enemy_action == Action.FWD:
-            enemy_next = self._move_target(enemy, True)
-        elif enemy_action == Action.BWD:
-            enemy_next = self._move_target(enemy, False)
+        for agent_id, (next_x, next_y) in desired_positions.items():
+            tank = self._tank(agent_id)
+            tank.x, tank.y = next_x, next_y
 
-        if self._is_wall(*player_next):
-            player_next = (player.x, player.y)
-        if self._is_wall(*enemy_next):
-            enemy_next = (enemy.x, enemy.y)
-
-        player_cur = (player.x, player.y)
-        enemy_cur = (enemy.x, enemy.y)
-
-        same_cell = player_next == enemy_next
-        swap = player_next == enemy_cur and enemy_next == player_cur
-        if same_cell or swap:
-            player_next = player_cur
-            enemy_next = enemy_cur
-
-        player.x, player.y = player_next
-        enemy.x, enemy.y = enemy_next
-
-    def _trace_shot(self, shooter: Tank, defender: Tank) -> Tuple[int, int, int, int, bool]:
+    def _trace_shot(self, shooter_id: AgentId) -> tuple[int, int, int, int, bool, AgentId | None]:
+        shooter = self._tank(shooter_id)
         fwd = dir_to_vec(shooter.dir)
         x0, y0 = shooter.x, shooter.y
         dx, dy = fwd
 
         hit = False
+        target_id: AgentId | None = None
         endx, endy = x0, y0
         x, y = x0, y0
+        target_positions = {
+            candidate: (self._tank(candidate).x, self._tank(candidate).y)
+            for candidate in self.opponents_of(shooter_id)
+            if self._tank(candidate).alive
+        }
 
         for _ in range(self.ray_limit):
             nx, ny = x + dx, y + dy
@@ -377,27 +456,34 @@ class TankEnv:
             x, y = nx, ny
             endx, endy = x, y
 
-            if (x, y) == (defender.x, defender.y):
-                hit = True
+            for candidate_id, position in target_positions.items():
+                if (x, y) == position:
+                    hit = True
+                    target_id = candidate_id
+                    break
+            if hit:
                 break
 
-        return x0, y0, endx, endy, hit
+        return x0, y0, endx, endy, hit, target_id
 
-    def _resolve_shot(
+    def _resolve_shots(
         self,
         current_shots: Dict[str, Tuple[int, int, int, int, bool]],
-        shot_key: str,
-        shooter: Tank,
-        defender: Tank,
-        action: Action,
-    ) -> bool:
-        if action != Action.SHOOT or shooter.cooldown != 0 or not shooter.alive or not defender.alive:
-            return False
-
-        shot = self._trace_shot(shooter, defender)
-        current_shots[shot_key] = shot
-        shooter.cooldown = self.cooldown_steps
-        return bool(shot[-1])
+        action_by_agent: Dict[AgentId, Action],
+    ) -> tuple[Set[AgentId], Dict[AgentId, bool]]:
+        hit_targets: Set[AgentId] = set()
+        shooter_hits = {agent_id: False for agent_id in self.agent_ids}
+        for agent_id, action in action_by_agent.items():
+            shooter = self._tank(agent_id)
+            if action != Action.SHOOT or shooter.cooldown != 0 or not shooter.alive:
+                continue
+            shot = self._trace_shot(agent_id)
+            current_shots[agent_id] = shot[:5]
+            shooter.cooldown = self.cooldown_steps
+            if shot[5] is not None:
+                hit_targets.add(shot[5])
+                shooter_hits[agent_id] = True
+        return hit_targets, shooter_hits
 
     def _clear_line(self, origin: Coord, goal: Coord) -> bool:
         ox, oy = origin
@@ -452,27 +538,34 @@ class TankEnv:
         side_component = float(dx * right_vec[0] + dy * right_vec[1])
         return fwd_component, side_component
 
+    def _pick_primary_opponent(self, agent_id: AgentId, visible_only: bool = False) -> Tank | None:
+        observer = self._tank(agent_id)
+        candidates: list[Tank] = []
+        for opponent_id in self.opponents_of(agent_id):
+            opponent = self._tank(opponent_id)
+            if not opponent.alive:
+                continue
+            if visible_only and not self._is_visible(observer, opponent):
+                continue
+            candidates.append(opponent)
+        if not candidates:
+            return None
+        return min(candidates, key=lambda tank: abs(tank.x - observer.x) + abs(tank.y - observer.y))
+
     def _update_memory(
         self,
-        player_hit: bool,
-        enemy_hit: bool,
+        hit_targets: Set[AgentId],
+        shooter_hits: Dict[AgentId, bool],
         current_shots: Dict[str, Tuple[int, int, int, int, bool]],
     ) -> None:
-        assert self.state is not None
-        player = self._tank("player")
-        enemy = self._tank("enemy")
-
         self.last_step_events = self._empty_step_events()
-        self.last_step_events["player"]["took_hit"] = float(player_hit)
-        self.last_step_events["player"]["hit_enemy"] = float(enemy_hit)
-        self.last_step_events["enemy"]["took_hit"] = float(enemy_hit)
-        self.last_step_events["enemy"]["hit_enemy"] = float(player_hit)
+        for agent_id in self.agent_ids:
+            self.last_step_events[agent_id]["took_hit"] = float(agent_id in hit_targets)
+            self.last_step_events[agent_id]["hit_enemy"] = float(shooter_hits.get(agent_id, False))
 
-        for agent_id, observer, target in (
-            ("player", player, enemy),
-            ("enemy", enemy, player),
-        ):
-            if self._is_visible(observer, target):
+            observer = self._tank(agent_id)
+            target = self._pick_primary_opponent(agent_id, visible_only=True)
+            if target is not None:
                 self.last_seen_enemy[agent_id] = LastSeenInfo(
                     dx=(target.x - observer.x) / max(1, self.w - 1),
                     dy=(target.y - observer.y) / max(1, self.h - 1),
@@ -481,15 +574,15 @@ class TankEnv:
             elif self.last_seen_enemy[agent_id].age >= 0:
                 self.last_seen_enemy[agent_id].age += 1
 
-        # Encode only coarse directional audio cues so the agent must still remember context.
-        if "enemy" in current_shots:
-            fwd, side = self._relative_direction_features(player, (enemy.x, enemy.y))
-            self.last_step_events["player"]["heard_shot_fwd"] = 1.0 if fwd >= 0 else -1.0
-            self.last_step_events["player"]["heard_shot_side"] = 1.0 if side >= 0 else -1.0
-        if "player" in current_shots:
-            fwd, side = self._relative_direction_features(enemy, (player.x, player.y))
-            self.last_step_events["enemy"]["heard_shot_fwd"] = 1.0 if fwd >= 0 else -1.0
-            self.last_step_events["enemy"]["heard_shot_side"] = 1.0 if side >= 0 else -1.0
+            hearing_target: Tank | None = None
+            for shooter_id in current_shots:
+                if self.team_of(shooter_id) != self.team_of(agent_id):
+                    hearing_target = self._tank(shooter_id)
+                    break
+            if hearing_target is not None:
+                fwd, side = self._relative_direction_features(observer, (hearing_target.x, hearing_target.y))
+                self.last_step_events[agent_id]["heard_shot_fwd"] = 1.0 if fwd >= 0 else -1.0
+                self.last_step_events[agent_id]["heard_shot_side"] = 1.0 if side >= 0 else -1.0
 
     def _raycast_wall_dist(self, origin: Coord, direction: Coord, limit: int) -> int:
         assert self.state is not None
@@ -507,7 +600,7 @@ class TankEnv:
 
         return limit
 
-    def _raycast_enemy_dist(self, origin: Coord, direction: Coord, limit: int, enemy: Tank) -> int:
+    def _raycast_enemy_dist(self, origin: Coord, direction: Coord, limit: int, enemies: tuple[Tank, ...]) -> int:
         ox, oy = origin
         dx, dy = direction
         dist = 0
@@ -516,8 +609,9 @@ class TankEnv:
         while dist < limit:
             if self._is_wall(x,y):
                 return -1
-            if (x,y) == (enemy.x, enemy.y):
-                return dist
+            for enemy in enemies:
+                if (x,y) == (enemy.x, enemy.y):
+                    return dist
             dist += 1
             x += dx
             y += dy
@@ -529,7 +623,8 @@ class TankEnv:
         if agent_id not in self.state.tanks:
             raise ValueError(f"Unknown agent_id: {agent_id}")
         t = self._tank(agent_id)
-        enemy = self._opponent(agent_id)
+        enemies = tuple(self._tank(opponent_id) for opponent_id in self.opponents_of(agent_id) if self._tank(opponent_id).alive)
+        primary_enemy = self._pick_primary_opponent(agent_id)
 
         fwd = dir_to_vec(t.dir)
         back = (-fwd[0], -fwd[1])
@@ -541,9 +636,9 @@ class TankEnv:
         origin = (t.x, t.y)
 
         wall_d = [self._raycast_wall_dist(origin, d, limit) for d in dirs]
-        enemy_visible = self._is_visible(t, enemy)
+        enemy_visible = any(self._is_visible(t, enemy) for enemy in enemies)
         if enemy_visible:
-            enemy_d = [self._raycast_enemy_dist(origin, d, limit, enemy) for d in dirs]
+            enemy_d = [self._raycast_enemy_dist(origin, d, limit, enemies) for d in dirs]
         else:
             enemy_d = [-1, -1, -1, -1]
 
@@ -555,17 +650,19 @@ class TankEnv:
 
         cd_norm = float(t.cooldown) / float(self.cooldown_steps) if self.cooldown_steps > 0 else 0.0
         enemy_has_shot = 0.0
-        if enemy_visible and self._clear_line((enemy.x, enemy.y), (t.x, t.y)):
-            if enemy.x == t.x:
-                goal_dir = Direction.S if t.y > enemy.y else Direction.N
-            else:
-                goal_dir = Direction.E if t.x > enemy.x else Direction.W
-            enemy_has_shot = 1.0 if enemy.dir == goal_dir and enemy.cooldown == 0 else 0.0
+        for enemy in enemies:
+            if self._is_visible(enemy, t):
+                if enemy.x == t.x:
+                    goal_dir = Direction.S if t.y > enemy.y else Direction.N
+                else:
+                    goal_dir = Direction.E if t.x > enemy.x else Direction.W
+                if enemy.dir == goal_dir and enemy.cooldown == 0:
+                    enemy_has_shot = 1.0
+                    break
 
         heard_enemy_shot = 0.0
         if self.last_shot is not None and self.last_shot_ttl > 0:
-            shot_key = "enemy" if agent_id == "player" else "player"
-            heard_enemy_shot = 1.0 if shot_key in self.last_shot else 0.0
+            heard_enemy_shot = 1.0 if any(self.team_of(shooter_id) != self.team_of(agent_id) for shooter_id in self.last_shot) else 0.0
 
         pos_norm = [t.x / max(1, self.w - 1), t.y / max(1, self.h - 1)]
         step_norm = float(self.state.steps) / float(self.max_steps) if self.max_steps > 0 else 0.0
@@ -587,6 +684,8 @@ class TankEnv:
                 float(enemy_visible),
                 enemy_has_shot,
                 heard_enemy_shot,
+                float(len(self.allies_of(agent_id))),
+                float(len(self.opponents_of(agent_id))),
                 step_norm,
                 last_seen.dx,
                 last_seen.dy,

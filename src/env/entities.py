@@ -55,3 +55,4 @@ class StepInfo:
     agent_alive: Dict[str, bool] = field(default_factory=dict)
     team_wins: Dict[str, bool] = field(default_factory=dict)
     team_alive_counts: Dict[str, int] = field(default_factory=dict)
+    winning_team: str | None = None
