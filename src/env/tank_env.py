@@ -16,6 +16,13 @@ class EnvState:
     steps: int
     phase: int
 
+
+@dataclass
+class LastSeenInfo:
+    dx: float = 0.0
+    dy: float = 0.0
+    age: int = -1
+
 class TankEnv:
 
     def __init__(
@@ -39,6 +46,14 @@ class TankEnv:
         self.state: Optional[EnvState] = None
         self.last_shot: Optional[Dict[str, Tuple[int, int, int, int, bool]]] = None
         self.last_shot_ttl: int = 0
+        self.last_seen_enemy: Dict[AgentId, LastSeenInfo] = {
+            "player": LastSeenInfo(),
+            "enemy": LastSeenInfo(),
+        }
+        self.last_step_events: Dict[AgentId, Dict[str, float]] = {
+            "player": {"took_hit": 0.0, "hit_enemy": 0.0, "heard_shot_fwd": 0.0, "heard_shot_side": 0.0},
+            "enemy": {"took_hit": 0.0, "hit_enemy": 0.0, "heard_shot_fwd": 0.0, "heard_shot_side": 0.0},
+        }
 
     def _reachable(self, start: Coord, goal: Coord,walls: Set[Coord]) -> bool:
         from collections import deque
@@ -108,6 +123,14 @@ class TankEnv:
 
         self.last_shot = None
         self.last_shot_ttl = 0
+        self.last_seen_enemy = {
+            "player": LastSeenInfo(),
+            "enemy": LastSeenInfo(),
+        }
+        self.last_step_events = {
+            "player": {"took_hit": 0.0, "hit_enemy": 0.0, "heard_shot_fwd": 0.0, "heard_shot_side": 0.0},
+            "enemy": {"took_hit": 0.0, "hit_enemy": 0.0, "heard_shot_fwd": 0.0, "heard_shot_side": 0.0},
+        }
 
         return self.observe_all()
 
@@ -186,6 +209,8 @@ class TankEnv:
         if current_shots:
             self.last_shot = current_shots
             self.last_shot_ttl = 6
+
+        self._update_memory(player_hit=player_hit, enemy_hit=enemy_hit, current_shots=current_shots)
 
         return self.observe_all(), rewards, bool(done), {
             "info": info,
@@ -339,6 +364,64 @@ class TankEnv:
             return -0.02
         return -0.01
 
+    def _relative_direction_features(self, observer: Tank, target_xy: Coord) -> tuple[float, float]:
+        tx, ty = target_xy
+        dx = tx - observer.x
+        dy = ty - observer.y
+        fwd_vec = dir_to_vec(observer.dir)
+        right_vec = dir_to_vec(turn_right(observer.dir))
+        fwd_component = float(dx * fwd_vec[0] + dy * fwd_vec[1])
+        side_component = float(dx * right_vec[0] + dy * right_vec[1])
+        return fwd_component, side_component
+
+    def _update_memory(
+        self,
+        player_hit: bool,
+        enemy_hit: bool,
+        current_shots: Dict[str, Tuple[int, int, int, int, bool]],
+    ) -> None:
+        assert self.state is not None
+        player = self.state.player
+        enemy = self.state.enemy
+
+        self.last_step_events = {
+            "player": {
+                "took_hit": float(player_hit),
+                "hit_enemy": float(enemy_hit),
+                "heard_shot_fwd": 0.0,
+                "heard_shot_side": 0.0,
+            },
+            "enemy": {
+                "took_hit": float(enemy_hit),
+                "hit_enemy": float(player_hit),
+                "heard_shot_fwd": 0.0,
+                "heard_shot_side": 0.0,
+            },
+        }
+
+        for agent_id, observer, target in (
+            ("player", player, enemy),
+            ("enemy", enemy, player),
+        ):
+            if self._is_visible(observer, target):
+                self.last_seen_enemy[agent_id] = LastSeenInfo(
+                    dx=(target.x - observer.x) / max(1, self.w - 1),
+                    dy=(target.y - observer.y) / max(1, self.h - 1),
+                    age=0,
+                )
+            elif self.last_seen_enemy[agent_id].age >= 0:
+                self.last_seen_enemy[agent_id].age += 1
+
+        # Encode only coarse directional audio cues so the agent must still remember context.
+        if "enemy" in current_shots:
+            fwd, side = self._relative_direction_features(player, (enemy.x, enemy.y))
+            self.last_step_events["player"]["heard_shot_fwd"] = 1.0 if fwd >= 0 else -1.0
+            self.last_step_events["player"]["heard_shot_side"] = 1.0 if side >= 0 else -1.0
+        if "player" in current_shots:
+            fwd, side = self._relative_direction_features(enemy, (player.x, player.y))
+            self.last_step_events["enemy"]["heard_shot_fwd"] = 1.0 if fwd >= 0 else -1.0
+            self.last_step_events["enemy"]["heard_shot_side"] = 1.0 if side >= 0 else -1.0
+
     def _raycast_wall_dist(self, origin: Coord, direction: Coord, limit: int) -> int:
         assert self.state is not None
         ox, oy = origin
@@ -421,13 +504,33 @@ class TankEnv:
 
         pos_norm = [t.x / max(1, self.w - 1), t.y / max(1, self.h - 1)]
         step_norm = float(self.state.steps) / float(self.max_steps) if self.max_steps > 0 else 0.0
+        last_seen = self.last_seen_enemy[agent_id]
+        last_seen_age = (
+            min(float(last_seen.age) / float(self.max_steps), 1.0)
+            if last_seen.age >= 0 and self.max_steps > 0
+            else -1.0
+        )
+        recent_events = self.last_step_events[agent_id]
 
         return np.array(
             wall_norm
             + enemy_norm
             + dir_onehot
             + pos_norm
-            + [cd_norm, float(enemy_visible), enemy_has_shot, heard_enemy_shot, step_norm],
+            + [
+                cd_norm,
+                float(enemy_visible),
+                enemy_has_shot,
+                heard_enemy_shot,
+                step_norm,
+                last_seen.dx,
+                last_seen.dy,
+                last_seen_age,
+                recent_events["took_hit"],
+                recent_events["hit_enemy"],
+                recent_events["heard_shot_fwd"],
+                recent_events["heard_shot_side"],
+            ],
             dtype=np.float32,
         )
 
@@ -436,4 +539,3 @@ class TankEnv:
             "player": self.observe("player"),
             "enemy": self.observe("enemy"),
         }
-
