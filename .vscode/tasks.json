@@ -2,40 +2,103 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "Train Self-Play Curriculum",
+      "label": "Train Hidden-Info 1v1",
       "type": "shell",
       "command": "${workspaceFolder}/.venv/bin/python",
-      "args": ["-m", "src.scripts.train"],
+      "args": [
+        "-m",
+        "src.scripts.train",
+        "--phase",
+        "2",
+        "--single-phase",
+        "--layout",
+        "1v1",
+        "--pool-opponent-prob",
+        "0",
+        "--self-play-prob",
+        "1"
+      ],
       "options": {
         "cwd": "${workspaceFolder}"
       },
       "problemMatcher": []
     },
     {
-      "label": "Train Hidden-Info Phase 2",
+      "label": "Train Team Self-Play 2v2",
       "type": "shell",
       "command": "${workspaceFolder}/.venv/bin/python",
-      "args": ["-m", "src.scripts.train", "--phase", "2", "--single-phase"],
+      "args": [
+        "-m",
+        "src.scripts.train",
+        "--phase",
+        "2",
+        "--single-phase",
+        "--layout",
+        "2v2",
+        "--pool-opponent-prob",
+        "0",
+        "--self-play-prob",
+        "1"
+      ],
       "options": {
         "cwd": "${workspaceFolder}"
       },
       "problemMatcher": []
     },
     {
-      "label": "Quick Eval Hidden-Info",
+      "label": "Quick Eval 1v1",
       "type": "shell",
       "command": "${workspaceFolder}/.venv/bin/python",
-      "args": ["-m", "src.scripts.eval", "--phase", "2", "--episodes", "1"],
+      "args": [
+        "-m",
+        "src.scripts.eval",
+        "--phase",
+        "2",
+        "--layout",
+        "1v1",
+        "--episodes",
+        "3"
+      ],
       "options": {
         "cwd": "${workspaceFolder}"
       },
       "problemMatcher": []
     },
     {
-      "label": "Render Eval Hidden-Info",
+      "label": "Render Eval 1v1",
       "type": "shell",
       "command": "${workspaceFolder}/.venv/bin/python",
-      "args": ["-m", "src.scripts.eval", "--phase", "2", "--episodes", "10", "--render"],
+      "args": [
+        "-m",
+        "src.scripts.eval",
+        "--phase",
+        "2",
+        "--layout",
+        "1v1",
+        "--episodes",
+        "10",
+        "--render"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Render Eval 2v2",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python",
+      "args": [
+        "-m",
+        "src.scripts.eval",
+        "--phase",
+        "2",
+        "--layout",
+        "2v2",
+        "--episodes",
+        "10",
+        "--render"
+      ],
       "options": {
         "cwd": "${workspaceFolder}"
       },
@@ -53,9 +116,7 @@
         "--enemy-model",
         "src/scripts/models/ppo_phase2_last.pt",
         "--phase",
-        "2",
-        "--episodes",
-        "10"
+        "2"
       ],
       "options": {
         "cwd": "${workspaceFolder}"

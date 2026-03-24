@@ -2,42 +2,95 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Train Self-Play Curriculum",
+      "name": "Train Hidden-Info 1v1",
       "type": "python",
       "request": "launch",
       "python": "${workspaceFolder}/.venv/bin/python",
       "module": "src.scripts.train",
-      "args": [],
+      "args": [
+        "--phase",
+        "2",
+        "--single-phase",
+        "--layout",
+        "1v1",
+        "--pool-opponent-prob",
+        "0",
+        "--self-play-prob",
+        "1"
+      ],
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}"
     },
     {
-      "name": "Train Hidden-Info Phase 2",
+      "name": "Train Team Self-Play 2v2",
       "type": "python",
       "request": "launch",
       "python": "${workspaceFolder}/.venv/bin/python",
       "module": "src.scripts.train",
-      "args": ["--phase", "2", "--single-phase"],
+      "args": [
+        "--phase",
+        "2",
+        "--single-phase",
+        "--layout",
+        "2v2",
+        "--pool-opponent-prob",
+        "0",
+        "--self-play-prob",
+        "1"
+      ],
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}"
     },
     {
-      "name": "Quick Eval Hidden-Info",
+      "name": "Quick Eval 1v1",
       "type": "python",
       "request": "launch",
       "python": "${workspaceFolder}/.venv/bin/python",
       "module": "src.scripts.eval",
-      "args": ["--phase", "2", "--episodes", "1"],
+      "args": [
+        "--phase",
+        "2",
+        "--layout",
+        "1v1",
+        "--episodes",
+        "3"
+      ],
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}"
     },
     {
-      "name": "Render Eval Hidden-Info",
+      "name": "Render Eval 1v1",
       "type": "python",
       "request": "launch",
       "python": "${workspaceFolder}/.venv/bin/python",
       "module": "src.scripts.eval",
-      "args": ["--phase", "2", "--episodes", "10", "--render"],
+      "args": [
+        "--phase",
+        "2",
+        "--layout",
+        "1v1",
+        "--episodes",
+        "10",
+        "--render"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Render Eval 2v2",
+      "type": "python",
+      "request": "launch",
+      "python": "${workspaceFolder}/.venv/bin/python",
+      "module": "src.scripts.eval",
+      "args": [
+        "--phase",
+        "2",
+        "--layout",
+        "2v2",
+        "--episodes",
+        "10",
+        "--render"
+      ],
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}"
     },
@@ -53,9 +106,7 @@
         "--enemy-model",
         "src/scripts/models/ppo_phase2_last.pt",
         "--phase",
-        "2",
-        "--episodes",
-        "10"
+        "2"
       ],
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}"
