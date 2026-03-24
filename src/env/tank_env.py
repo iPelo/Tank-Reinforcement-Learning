@@ -68,10 +68,26 @@ class TankEnv:
         assert self.state is not None
         return self.state.tanks[agent_id]
 
+    def team_of(self, agent_id: AgentId) -> str:
+        assert self.state is not None
+        return self.state.teams[agent_id]
+
+    def team_ids(self) -> tuple[str, ...]:
+        assert self.state is not None
+        return tuple(dict.fromkeys(self.state.teams.values()))
+
+    def allies_of(self, agent_id: AgentId) -> tuple[AgentId, ...]:
+        team_id = self.team_of(agent_id)
+        return tuple(candidate for candidate in self.agent_ids if candidate != agent_id and self.team_of(candidate) == team_id)
+
+    def opponents_of(self, agent_id: AgentId) -> tuple[AgentId, ...]:
+        team_id = self.team_of(agent_id)
+        return tuple(candidate for candidate in self.agent_ids if self.team_of(candidate) != team_id)
+
     def _opponent_id(self, agent_id: AgentId) -> AgentId:
-        for candidate in self.agent_ids:
-            if candidate != agent_id:
-                return candidate
+        opponents = self.opponents_of(agent_id)
+        if opponents:
+            return opponents[0]
         raise ValueError(f"No opponent defined for {agent_id}")
 
     def _opponent(self, agent_id: AgentId) -> Tank:
@@ -196,9 +212,25 @@ class TankEnv:
         if player_hit:
             player.alive = False
 
+        agent_hits = {
+            "player": bool(enemy_hit),
+            "enemy": bool(player_hit),
+        }
+        agent_alive = {
+            agent_id: self._tank(agent_id).alive
+            for agent_id in self.agent_ids
+        }
         player_win = enemy_hit and not player_hit
         enemy_win = player_hit and not enemy_hit
         draw = player_hit and enemy_hit
+        agent_wins = {
+            "player": bool(player_win),
+            "enemy": bool(enemy_win),
+        }
+        team_wins = {
+            self.team_of("player"): bool(player_win),
+            self.team_of("enemy"): bool(enemy_win),
+        }
 
         if not player.alive or not enemy.alive:
             done = True
@@ -231,6 +263,11 @@ class TankEnv:
             enemy_hit=enemy_hit,
             steps=s.steps,
             phase=s.phase,
+            agent_wins=agent_wins,
+            agent_hits=agent_hits,
+            agent_alive=agent_alive,
+            team_wins=team_wins,
+            team_alive_counts=self._team_alive_counts(),
         )
         if current_shots:
             self.last_shot = current_shots
@@ -238,10 +275,23 @@ class TankEnv:
 
         self._update_memory(player_hit=player_hit, enemy_hit=enemy_hit, current_shots=current_shots)
 
-        return self.observe_all(), rewards, bool(done), {
+        team_rewards: Dict[str, float] = {}
+        for agent_id, reward in rewards.items():
+            team_id = self.team_of(agent_id)
+            team_rewards[team_id] = team_rewards.get(team_id, 0.0) + float(reward)
+
+        obs_by_agent = self.observe_all()
+        return obs_by_agent, rewards, bool(done), {
             "info": info,
             "shot": self.last_shot,
             "shot_ttl": self.last_shot_ttl,
+            "agent_ids": self.agent_ids,
+            "teams": dict(s.teams),
+            "agent_rewards": dict(rewards),
+            "team_rewards": team_rewards,
+            "agent_done": {agent_id: bool(done) for agent_id in self.agent_ids},
+            "team_done": {team_id: bool(done) for team_id in self.team_ids()},
+            "team_obs": self.team_observe_all(),
             "actions": {
                 "player": player_action,
                 "enemy": enemy_action,
@@ -551,3 +601,17 @@ class TankEnv:
 
     def observe_all(self) -> Dict[AgentId, np.ndarray]:
         return {agent_id: self.observe(agent_id) for agent_id in self.agent_ids}
+
+    def team_observe_all(self) -> Dict[str, Dict[AgentId, np.ndarray]]:
+        team_obs: Dict[str, Dict[AgentId, np.ndarray]] = {}
+        for agent_id in self.agent_ids:
+            team_id = self.team_of(agent_id)
+            team_obs.setdefault(team_id, {})[agent_id] = self.observe(agent_id)
+        return team_obs
+
+    def _team_alive_counts(self) -> Dict[str, int]:
+        counts: Dict[str, int] = {team_id: 0 for team_id in self.team_ids()}
+        for agent_id in self.agent_ids:
+            if self._tank(agent_id).alive:
+                counts[self.team_of(agent_id)] += 1
+        return counts

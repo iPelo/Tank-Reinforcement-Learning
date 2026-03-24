@@ -1,7 +1,7 @@
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import Tuple
+from typing import Dict, Tuple
 
 class Direction(IntEnum):
     N = 0
@@ -50,3 +50,8 @@ class StepInfo:
     enemy_hit: bool
     steps: int
     phase: int
+    agent_wins: Dict[str, bool] = field(default_factory=dict)
+    agent_hits: Dict[str, bool] = field(default_factory=dict)
+    agent_alive: Dict[str, bool] = field(default_factory=dict)
+    team_wins: Dict[str, bool] = field(default_factory=dict)
+    team_alive_counts: Dict[str, int] = field(default_factory=dict)
