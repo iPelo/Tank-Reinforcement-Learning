@@ -77,6 +77,42 @@ class RecurrentActorCritic(nn.Module):
         value = self.value_head(features).squeeze(-1)
         return logits, value, next_state
 
+    def evaluate_sequence(
+        self,
+        obs: torch.Tensor,
+        state: HiddenState | None = None,
+        episode_start: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, HiddenState]:
+        if obs.ndim != 3:
+            raise ValueError(f"Expected obs with shape [batch, time, obs_dim], got {tuple(obs.shape)}")
+
+        batch_size, time_steps, _ = obs.shape
+        if state is None:
+            state = self.initial_state(batch_size=batch_size, device=obs.device)
+
+        if episode_start is None:
+            episode_start = torch.zeros((batch_size, time_steps), dtype=torch.float32, device=obs.device)
+
+        logits_steps: list[torch.Tensor] = []
+        value_steps: list[torch.Tensor] = []
+        current_state = state
+
+        for step_idx in range(time_steps):
+            reset_mask = episode_start[:, step_idx].view(1, batch_size, 1)
+            if torch.any(reset_mask > 0):
+                current_state = (
+                    current_state[0] * (1.0 - reset_mask),
+                    current_state[1] * (1.0 - reset_mask),
+                )
+
+            step_logits, step_value, current_state = self.forward(obs[:, step_idx], current_state)
+            logits_steps.append(step_logits)
+            value_steps.append(step_value)
+
+        logits = torch.stack(logits_steps, dim=1)
+        value = torch.stack(value_steps, dim=1)
+        return logits, value, current_state
+
     @torch.no_grad()
     def act(self, obs: torch.Tensor, state: HiddenState | None = None) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, HiddenState]:
         logits, value, next_state = self.forward(obs, state)
@@ -110,3 +146,6 @@ class RecurrentModelIO:
             hidden=self.hidden,
             recurrent_hidden=self.recurrent_hidden,
         )
+
+
+PolicyModel = ActorCritic | RecurrentActorCritic

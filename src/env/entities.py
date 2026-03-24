@@ -39,6 +39,7 @@ class Tank:
     dir: Direction
     cooldown: int = 0
     alive: bool = True
+    team_id: str = "neutral"
 
 @dataclass
 class StepInfo:

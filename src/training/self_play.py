@@ -6,35 +6,39 @@ from typing import Any
 import numpy as np
 import torch
 
-from src.agents.policy import ActorCritic
-from src.evaluation.checkpoint_match import run_match_series
+from src.agents.policy import ActorCritic, HiddenState, PolicyModel, RecurrentActorCritic
+from src.evaluation.checkpoint_match import load_policy, run_match_series
 from src.env.tank_env import TankEnv
-from src.training.buffer import RolloutBuffer
+from src.training.buffer import RecurrentRolloutBuffer, RolloutBuffer
 from src.training.ppo import PPO, PPOConfig
 
 AGENT_IDS = ("player", "enemy")
-CHECKPOINT_VERSION = 2
+CHECKPOINT_VERSION = 3
 
 
 def build_ckpt_payload(
-    model: ActorCritic,
+    model: PolicyModel,
     obs_dim: int,
     act_dim: int,
     updates: int,
     phase: int,
     cfg: PPOConfig | None = None,
 ) -> dict[str, Any]:
+    policy_type = "recurrent_shared_policy" if isinstance(model, RecurrentActorCritic) else "shared_policy"
     payload: dict[str, Any] = {
         "checkpoint_version": CHECKPOINT_VERSION,
         "training_mode": "self_play",
-        "policy_type": "shared_policy",
+        "policy_type": policy_type,
         "agent_ids": list(AGENT_IDS),
         "model": model.state_dict(),
         "obs_dim": obs_dim,
         "act_dim": act_dim,
         "updates": updates,
         "phase": phase,
+        "hidden": int(getattr(model, "hidden", 128)),
     }
+    if isinstance(model, RecurrentActorCritic):
+        payload["recurrent_hidden"] = model.recurrent_hidden
     if cfg is not None:
         payload["ppo_config"] = asdict(cfg)
     return payload
@@ -42,7 +46,7 @@ def build_ckpt_payload(
 
 def save_ckpt(
     path: Path,
-    model: ActorCritic,
+    model: PolicyModel,
     obs_dim: int,
     act_dim: int,
     updates: int,
@@ -52,7 +56,7 @@ def save_ckpt(
     torch.save(build_ckpt_payload(model=model, obs_dim=obs_dim, act_dim=act_dim, updates=updates, phase=phase, cfg=cfg), path)
 
 
-def load_ckpt(path: Path, model: ActorCritic, device: torch.device) -> tuple[int, int, dict[str, Any]]:
+def load_ckpt(path: Path, model: PolicyModel, device: torch.device) -> tuple[int, int, dict[str, Any]]:
     ckpt = torch.load(path, map_location=device)
     model.load_state_dict(ckpt["model"])
     return int(ckpt.get("updates", 0)), int(ckpt.get("phase", 0)), ckpt
@@ -144,13 +148,23 @@ def parse_args() -> argparse.Namespace:
         default=8,
         help="Number of episodes to run when checking whether the current phase can advance.",
     )
+    ap.add_argument(
+        "--policy-arch",
+        type=str,
+        default="recurrent",
+        choices=("feedforward", "recurrent"),
+        help="Training policy architecture.",
+    )
     return ap.parse_args()
 
 
 def make_algo(
-    device: torch.device, obs_dim: int, act_dim: int
-) -> tuple[ActorCritic, PPOConfig, PPO, RolloutBuffer, RolloutBuffer, RolloutBuffer]:
-    model = ActorCritic(obs_dim=obs_dim, act_dim=act_dim, hidden=128).to(device)
+    device: torch.device, obs_dim: int, act_dim: int, policy_arch: str
+) -> tuple[PolicyModel, PPOConfig, PPO, RolloutBuffer | RecurrentRolloutBuffer, RolloutBuffer | RecurrentRolloutBuffer, RolloutBuffer | RecurrentRolloutBuffer]:
+    if policy_arch == "recurrent":
+        model: PolicyModel = RecurrentActorCritic(obs_dim=obs_dim, act_dim=act_dim, hidden=128, recurrent_hidden=128).to(device)
+    else:
+        model = ActorCritic(obs_dim=obs_dim, act_dim=act_dim, hidden=128).to(device)
 
     cfg = PPOConfig(
         gamma=0.99,
@@ -163,16 +177,27 @@ def make_algo(
         rollout_steps=2048,
         minibatch_size=256,
         update_epochs=8,
+        sequence_length=32,
+        sequences_per_batch=8,
     )
 
     algo = PPO(model=model, cfg=cfg, device=device)
-    player_buf = RolloutBuffer(size=cfg.rollout_steps, obs_dim=obs_dim, device=device)
-    enemy_buf = RolloutBuffer(size=cfg.rollout_steps, obs_dim=obs_dim, device=device)
-    train_buf = RolloutBuffer(size=cfg.rollout_steps * 2, obs_dim=obs_dim, device=device)
+    if isinstance(model, RecurrentActorCritic):
+        player_buf = RecurrentRolloutBuffer(size=cfg.rollout_steps, obs_dim=obs_dim, recurrent_hidden=model.recurrent_hidden, device=device)
+        enemy_buf = RecurrentRolloutBuffer(size=cfg.rollout_steps, obs_dim=obs_dim, recurrent_hidden=model.recurrent_hidden, device=device)
+        train_buf = RecurrentRolloutBuffer(size=cfg.rollout_steps * 2, obs_dim=obs_dim, recurrent_hidden=model.recurrent_hidden, device=device)
+    else:
+        player_buf = RolloutBuffer(size=cfg.rollout_steps, obs_dim=obs_dim, device=device)
+        enemy_buf = RolloutBuffer(size=cfg.rollout_steps, obs_dim=obs_dim, device=device)
+        train_buf = RolloutBuffer(size=cfg.rollout_steps * 2, obs_dim=obs_dim, device=device)
     return model, cfg, algo, player_buf, enemy_buf, train_buf
 
 
-def merge_self_play_buffers(train_buf: RolloutBuffer, player_buf: RolloutBuffer, enemy_buf: RolloutBuffer) -> None:
+def merge_self_play_buffers(
+    train_buf: RolloutBuffer | RecurrentRolloutBuffer,
+    player_buf: RolloutBuffer | RecurrentRolloutBuffer,
+    enemy_buf: RolloutBuffer | RecurrentRolloutBuffer,
+) -> None:
     train_buf.reset()
     split = player_buf.size
 
@@ -192,11 +217,18 @@ def merge_self_play_buffers(train_buf: RolloutBuffer, player_buf: RolloutBuffer,
     train_buf.adv[split:] = enemy_buf.adv
     train_buf.ret[:split] = player_buf.ret
     train_buf.ret[split:] = enemy_buf.ret
+    if isinstance(train_buf, RecurrentRolloutBuffer) and isinstance(player_buf, RecurrentRolloutBuffer) and isinstance(enemy_buf, RecurrentRolloutBuffer):
+        train_buf.episode_start[:split] = player_buf.episode_start
+        train_buf.episode_start[split:] = enemy_buf.episode_start
+        train_buf.init_h[:split] = player_buf.init_h
+        train_buf.init_h[split:] = enemy_buf.init_h
+        train_buf.init_c[:split] = player_buf.init_c
+        train_buf.init_c[split:] = enemy_buf.init_c
     train_buf.ptr = train_buf.size
     train_buf.full = True
 
 
-def copy_buffer(dst_buf: RolloutBuffer, src_buf: RolloutBuffer) -> None:
+def copy_buffer(dst_buf: RolloutBuffer | RecurrentRolloutBuffer, src_buf: RolloutBuffer | RecurrentRolloutBuffer) -> None:
     dst_buf.reset()
     size = src_buf.size
     dst_buf.obs[:size] = src_buf.obs
@@ -207,23 +239,40 @@ def copy_buffer(dst_buf: RolloutBuffer, src_buf: RolloutBuffer) -> None:
     dst_buf.val[:size] = src_buf.val
     dst_buf.adv[:size] = src_buf.adv
     dst_buf.ret[:size] = src_buf.ret
+    if isinstance(dst_buf, RecurrentRolloutBuffer) and isinstance(src_buf, RecurrentRolloutBuffer):
+        dst_buf.episode_start[:size] = src_buf.episode_start
+        dst_buf.init_h[:size] = src_buf.init_h
+        dst_buf.init_c[:size] = src_buf.init_c
     dst_buf.ptr = size
     dst_buf.full = True
 
 
 class PolicyRunner:
-    def __init__(self, model: ActorCritic, device: torch.device) -> None:
+    def __init__(self, model: PolicyModel, device: torch.device) -> None:
         self.model = model
         self.device = device
 
-    def sample(self, obs: np.ndarray) -> tuple[int, float, float]:
+    def initial_state(self) -> HiddenState | None:
+        if isinstance(self.model, RecurrentActorCritic):
+            return self.model.initial_state(batch_size=1, device=self.device)
+        return None
+
+    def sample(self, obs: np.ndarray, state: HiddenState | None = None) -> tuple[int, float, float, HiddenState | None]:
         obs_t = torch.as_tensor(obs, dtype=torch.float32, device=self.device).unsqueeze(0)
+        if isinstance(self.model, RecurrentActorCritic):
+            with torch.no_grad():
+                action_t, logp_t, val_t, next_state = self.model.act(obs_t, state)
+            return int(action_t.item()), float(logp_t.item()), float(val_t.item()), next_state
         with torch.no_grad():
             action_t, logp_t, val_t = self.model.act(obs_t)
-        return int(action_t.item()), float(logp_t.item()), float(val_t.item())
+        return int(action_t.item()), float(logp_t.item()), float(val_t.item()), None
 
-    def value(self, obs: np.ndarray) -> float:
+    def value(self, obs: np.ndarray, state: HiddenState | None = None) -> float:
         obs_t = torch.as_tensor(obs, dtype=torch.float32, device=self.device).unsqueeze(0)
+        if isinstance(self.model, RecurrentActorCritic):
+            with torch.no_grad():
+                _, val_t, _ = self.model(obs_t, state)
+            return float(val_t.item())
         with torch.no_grad():
             _, val_t = self.model(obs_t)
         return float(val_t.item())
@@ -234,8 +283,8 @@ class SelfPlayCollector:
         self,
         learner_runner: PolicyRunner,
         opponent_runner: PolicyRunner,
-        player_buf: RolloutBuffer,
-        enemy_buf: RolloutBuffer,
+        player_buf: RolloutBuffer | RecurrentRolloutBuffer,
+        enemy_buf: RolloutBuffer | RecurrentRolloutBuffer,
         train_both_sides: bool,
     ) -> None:
         self.learner_runner = learner_runner
@@ -243,18 +292,33 @@ class SelfPlayCollector:
         self.player_buf = player_buf
         self.enemy_buf = enemy_buf
         self.train_both_sides = train_both_sides
+        self.states: dict[str, HiddenState | None] = {"player": None, "enemy": None}
+        self.episode_start: dict[str, bool] = {"player": True, "enemy": True}
 
     def reset(self) -> None:
         self.player_buf.reset()
         self.enemy_buf.reset()
+        self.states = {
+            "player": self.learner_runner.initial_state(),
+            "enemy": self.opponent_runner.initial_state(),
+        }
+        self.episode_start = {"player": True, "enemy": True}
 
-    def sample_actions(self, obs_by_agent: dict[str, np.ndarray]) -> tuple[dict[str, int], dict[str, float], dict[str, float]]:
-        player_action, player_logp, player_val = self.learner_runner.sample(obs_by_agent["player"])
-        enemy_action, enemy_logp, enemy_val = self.opponent_runner.sample(obs_by_agent["enemy"])
+    def sample_actions(
+        self,
+        obs_by_agent: dict[str, np.ndarray],
+    ) -> tuple[dict[str, int], dict[str, float], dict[str, float], dict[str, HiddenState | None]]:
+        player_action, player_logp, player_val, player_next_state = self.learner_runner.sample(
+            obs_by_agent["player"], self.states["player"]
+        )
+        enemy_action, enemy_logp, enemy_val, enemy_next_state = self.opponent_runner.sample(
+            obs_by_agent["enemy"], self.states["enemy"]
+        )
         return (
             {"player": player_action, "enemy": enemy_action},
             {"player": player_logp, "enemy": enemy_logp},
             {"player": player_val, "enemy": enemy_val},
+            {"player": player_next_state, "enemy": enemy_next_state},
         )
 
     def store_step(
@@ -263,38 +327,77 @@ class SelfPlayCollector:
         sampled_actions: dict[str, int],
         sampled_logps: dict[str, float],
         sampled_vals: dict[str, float],
+        next_states: dict[str, HiddenState | None],
         rewards: dict[str, float],
         done: bool,
     ) -> dict[str, float]:
-        self.player_buf.add(
-            obs=obs_by_agent["player"],
-            act=sampled_actions["player"],
-            rew=rewards["player"],
-            done=done,
-            logp=sampled_logps["player"],
-            val=sampled_vals["player"],
-        )
-        if self.train_both_sides:
-            self.enemy_buf.add(
-                obs=obs_by_agent["enemy"],
-                act=sampled_actions["enemy"],
-                rew=rewards["enemy"],
+        if isinstance(self.player_buf, RecurrentRolloutBuffer):
+            self.player_buf.add(
+                obs=obs_by_agent["player"],
+                act=sampled_actions["player"],
+                rew=rewards["player"],
                 done=done,
-                logp=sampled_logps["enemy"],
-                val=sampled_vals["enemy"],
+                episode_start=self.episode_start["player"],
+                logp=sampled_logps["player"],
+                val=sampled_vals["player"],
+                state=self.states["player"],
             )
+        else:
+            self.player_buf.add(
+                obs=obs_by_agent["player"],
+                act=sampled_actions["player"],
+                rew=rewards["player"],
+                done=done,
+                logp=sampled_logps["player"],
+                val=sampled_vals["player"],
+            )
+        if self.train_both_sides:
+            if isinstance(self.enemy_buf, RecurrentRolloutBuffer):
+                self.enemy_buf.add(
+                    obs=obs_by_agent["enemy"],
+                    act=sampled_actions["enemy"],
+                    rew=rewards["enemy"],
+                    done=done,
+                    episode_start=self.episode_start["enemy"],
+                    logp=sampled_logps["enemy"],
+                    val=sampled_vals["enemy"],
+                    state=self.states["enemy"],
+                )
+            else:
+                self.enemy_buf.add(
+                    obs=obs_by_agent["enemy"],
+                    act=sampled_actions["enemy"],
+                    rew=rewards["enemy"],
+                    done=done,
+                    logp=sampled_logps["enemy"],
+                    val=sampled_vals["enemy"],
+                )
+        self.states = {"player": next_states["player"], "enemy": next_states["enemy"]}
+        self.episode_start = {"player": False, "enemy": False}
+        if done:
+            self.states = {
+                "player": self.learner_runner.initial_state(),
+                "enemy": self.opponent_runner.initial_state(),
+            }
+            self.episode_start = {"player": True, "enemy": True}
         return {
             "player": float(rewards["player"]),
             "enemy": float(rewards["enemy"]),
         }
 
     def bootstrap_values(self, obs_by_agent: dict[str, np.ndarray]) -> dict[str, float]:
-        last_values = {"player": self.learner_runner.value(obs_by_agent["player"])}
+        last_values = {"player": self.learner_runner.value(obs_by_agent["player"], self.states["player"])}
         if self.train_both_sides:
-            last_values["enemy"] = self.opponent_runner.value(obs_by_agent["enemy"])
+            last_values["enemy"] = self.opponent_runner.value(obs_by_agent["enemy"], self.states["enemy"])
         return last_values
 
-    def finalize_rollouts(self, train_buf: RolloutBuffer, gamma: float, lam: float, obs_by_agent: dict[str, np.ndarray]) -> None:
+    def finalize_rollouts(
+        self,
+        train_buf: RolloutBuffer | RecurrentRolloutBuffer,
+        gamma: float,
+        lam: float,
+        obs_by_agent: dict[str, np.ndarray],
+    ) -> None:
         last_values = self.bootstrap_values(obs_by_agent)
         self.player_buf.compute_gae(last_val=last_values["player"], gamma=gamma, lam=lam)
         if self.train_both_sides:
@@ -316,13 +419,14 @@ def run_rollout(
 ) -> tuple[dict[str, np.ndarray], int, dict[str, float]]:
     for _ in range(cfg.rollout_steps):
         global_step += 1
-        sampled_actions, sampled_logps, sampled_vals = collector.sample_actions(obs_by_agent)
+        sampled_actions, sampled_logps, sampled_vals, next_states = collector.sample_actions(obs_by_agent)
         next_obs_by_agent, rewards, done, info = env.step(sampled_actions)
         reward_delta = collector.store_step(
             obs_by_agent=obs_by_agent,
             sampled_actions=sampled_actions,
             sampled_logps=sampled_logps,
             sampled_vals=sampled_vals,
+            next_states=next_states,
             rewards=rewards,
             done=done,
         )
@@ -358,7 +462,7 @@ def opponent_snapshot_path(models_dir: Path, phase: int, updates: int) -> Path:
 
 def save_opponent_snapshot(
     models_dir: Path,
-    model: ActorCritic,
+    model: PolicyModel,
     obs_dim: int,
     act_dim: int,
     updates: int,
@@ -377,6 +481,18 @@ def list_opponent_snapshots(models_dir: Path, phase: int) -> list[Path]:
     if not pool_dir.exists():
         return []
     return sorted(path for path in pool_dir.glob("*.pt") if path.is_file())
+
+
+def list_compatible_opponent_snapshots(models_dir: Path, phase: int, obs_dim: int, act_dim: int) -> list[Path]:
+    compatible: list[Path] = []
+    for path in list_opponent_snapshots(models_dir, phase):
+        ckpt = torch.load(path, map_location="cpu")
+        if int(ckpt.get("obs_dim", -1)) != obs_dim:
+            continue
+        if int(ckpt.get("act_dim", -1)) != act_dim:
+            continue
+        compatible.append(path)
+    return compatible
 
 
 def sample_opponent_snapshot(models_dir: Path, phase: int, rng: np.random.Generator) -> Path | None:
@@ -475,6 +591,11 @@ def should_advance_phase(
     return eval_player_win_rate >= advance_win_rate
 
 
+def infer_policy_arch_from_checkpoint(path: Path) -> str:
+    ckpt = torch.load(path, map_location="cpu")
+    return "recurrent" if ckpt.get("policy_type") == "recurrent_shared_policy" else "feedforward"
+
+
 def maybe_make_pool_opponent_runner(
     opponent_mix: dict[str, Any],
     models_dir: Path,
@@ -491,15 +612,24 @@ def maybe_make_pool_opponent_runner(
     if rng.random() >= float(opponent_mix["pool_opponent_prob"]):
         return None, None
 
-    snapshot_path = sample_opponent_snapshot(models_dir, phase, rng)
-    if snapshot_path is None:
+    snapshots = list_compatible_opponent_snapshots(models_dir, phase, obs_dim, act_dim)
+    if not snapshots:
         return None, None
 
-    opponent_model = ActorCritic(obs_dim=obs_dim, act_dim=act_dim, hidden=128).to(device)
-    _, _, opponent_ckpt = load_ckpt(snapshot_path, opponent_model, device)
-    opponent_model.eval()
-    label = f"{snapshot_path.name} (ckpt_v={opponent_ckpt.get('checkpoint_version', 1)})"
-    return PolicyRunner(model=opponent_model, device=device), label
+    shuffled_idxs = rng.permutation(len(snapshots))
+    for idx in shuffled_idxs:
+        snapshot_path = snapshots[int(idx)]
+        ckpt = torch.load(snapshot_path, map_location=device)
+        ckpt_obs_dim = int(ckpt.get("obs_dim", -1))
+        ckpt_act_dim = int(ckpt.get("act_dim", -1))
+        if ckpt_obs_dim != obs_dim or ckpt_act_dim != act_dim:
+            continue
+
+        opponent_model, _ = load_policy(str(snapshot_path), device)
+        label = f"{snapshot_path.name} (ckpt_v={ckpt.get('checkpoint_version', 1)})"
+        return PolicyRunner(model=opponent_model, device=device), label
+
+    return None, None
 
 
 def classify_opponent_label(label: str) -> str:
@@ -519,12 +649,10 @@ def build_best_eval_opponents(
     device: torch.device,
 ) -> list[tuple[str, PolicyRunner]]:
     opponents: list[tuple[str, PolicyRunner]] = [("current_policy", learner_runner)]
-    snapshots = list_opponent_snapshots(models_dir, phase)
+    snapshots = list_compatible_opponent_snapshots(models_dir, phase, obs_dim, act_dim)
     if snapshots:
         latest_snapshot = snapshots[-1]
-        opponent_model = ActorCritic(obs_dim=obs_dim, act_dim=act_dim, hidden=128).to(device)
-        load_ckpt(latest_snapshot, opponent_model, device)
-        opponent_model.eval()
+        opponent_model, _ = load_policy(str(latest_snapshot), device)
         opponents.append((latest_snapshot.name, PolicyRunner(opponent_model, device)))
     return opponents
 
@@ -532,7 +660,7 @@ def build_best_eval_opponents(
 def evaluate_best_candidate(
     phase: int,
     episodes: int,
-    learner_model: ActorCritic,
+    learner_model: PolicyModel,
     learner_runner: PolicyRunner,
     models_dir: Path,
     obs_dim: int,
@@ -579,7 +707,7 @@ def evaluate_best_candidate(
 def evaluate_phase_promotion(
     phase: int,
     episodes: int,
-    learner_model: ActorCritic,
+    learner_model: PolicyModel,
     learner_runner: PolicyRunner,
     models_dir: Path,
     obs_dim: int,
@@ -608,16 +736,22 @@ def run_training(args: argparse.Namespace) -> None:
 
     obs_dim = int(obs_by_agent["player"].shape[0])
     act_dim = 6
+    policy_arch = args.policy_arch
+    if args.resume:
+        policy_arch = infer_policy_arch_from_checkpoint(Path(args.resume))
 
-    model, cfg, algo, player_buf, enemy_buf, train_buf = make_algo(device=device, obs_dim=obs_dim, act_dim=act_dim)
+    model, cfg, algo, player_buf, enemy_buf, train_buf = make_algo(
+        device=device,
+        obs_dim=obs_dim,
+        act_dim=act_dim,
+        policy_arch=policy_arch,
+    )
     learner_runner = PolicyRunner(model=model, device=device)
     train_both_sides = opponent_mix["mode"] != "fixed"
     static_opponent_runner: PolicyRunner | None = None
     opponent_label = "current_policy"
     if args.opponent_checkpoint:
-        opponent_model = ActorCritic(obs_dim=obs_dim, act_dim=act_dim, hidden=128).to(device)
-        _, _, opponent_ckpt = load_ckpt(Path(args.opponent_checkpoint), opponent_model, device)
-        opponent_model.eval()
+        opponent_model, opponent_ckpt = load_policy(args.opponent_checkpoint, device)
         opponent_label = Path(args.opponent_checkpoint).name
         print(
             f"Loaded frozen opponent from {args.opponent_checkpoint} "
@@ -664,6 +798,7 @@ def run_training(args: argparse.Namespace) -> None:
         f"start_phase={current_phase} | advance_win_rate={args.advance_win_rate:.2f} | "
         f"min_updates_per_phase={args.min_updates_per_phase} | "
         f"opponent={'self_play' if train_both_sides else opponent_label} | "
+        f"policy_arch={policy_arch} | "
         f"snapshot_interval={args.snapshot_interval} | "
         f"mix_mode={opponent_mix['mode']} | "
         f"self_play_prob={opponent_mix['self_play_prob']:.2f} | "
