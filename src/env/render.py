@@ -44,6 +44,11 @@ class PygameRenderer:
         for (wx, wy) in env.state.walls:
             pygame.draw.rect(self._screen, (70, 70, 70), (wx * cs, wy * cs, cs, cs))
 
+        team_colors = {
+            "blue": (60, 160, 220),
+            "red": (220, 120, 60),
+        }
+
         def draw_tank(tank, body_color):
             x, y = tank.x, tank.y
             pygame.draw.rect(self._screen, body_color, (x * cs, y * cs, cs, cs))
@@ -62,8 +67,11 @@ class PygameRenderer:
 
             pygame.draw.line(self._screen, (255, 255, 255), (cx, cy), (cx + dx, cy + dy), 3)
 
-        draw_tank(env.state.player, (60, 160, 220))
-        draw_tank(env.state.enemy, (220, 120, 60))
+        for agent_id, tank in env.state.tanks.items():
+            if not tank.alive:
+                continue
+            body_color = team_colors.get(getattr(tank, "team_id", "neutral"), (180, 180, 180))
+            draw_tank(tank, body_color)
 
         shot = getattr(env, "last_shot", None)
         ttl = getattr(env, "last_shot_ttl", 0)
@@ -76,10 +84,14 @@ class PygameRenderer:
                 x0, y0, x1, y1, hit = shot_data
                 p0 = center(x0, y0)
                 p1 = center(x1, y1)
-                if who == "player":
+                shooter = env.state.tanks.get(who)
+                shooter_team = getattr(shooter, "team_id", "neutral") if shooter is not None else "neutral"
+                if shooter_team == "blue":
                     color = (60, 220, 120) if hit else (120, 220, 255)
-                else:
+                elif shooter_team == "red":
                     color = (255, 180, 60) if hit else (220, 80, 80)
+                else:
+                    color = (220, 220, 220)
                 pygame.draw.line(self._screen, color, p0, p1, 4)
 
         if text:
