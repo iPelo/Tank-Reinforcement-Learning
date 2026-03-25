@@ -31,7 +31,20 @@ class LayoutSpec:
     teams: Dict[AgentId, str]
     spawn_presets: tuple[Dict[AgentId, Coord], ...]
 
+
+@dataclass(frozen=True)
+class EnvConfig:
+    w: int
+    h: int
+    max_steps: int
+    wall_density: float
+
 class TankEnv:
+    DEFAULT_ENV_CONFIGS: Dict[str, EnvConfig] = {
+        "1v1": EnvConfig(w=21, h=21, max_steps=320, wall_density=0.10),
+        "1v2": EnvConfig(w=17, h=17, max_steps=240, wall_density=0.11),
+        "2v2": EnvConfig(w=19, h=19, max_steps=260, wall_density=0.10),
+    }
     LAYOUTS: Dict[str, LayoutSpec] = {
         "1v1": LayoutSpec(
             name="1v1",
@@ -95,6 +108,12 @@ class TankEnv:
         self.last_shot_ttl: int = 0
         self.last_seen_enemy: Dict[AgentId, LastSeenInfo] = self._empty_last_seen()
         self.last_step_events: Dict[AgentId, Dict[str, float]] = self._empty_step_events()
+
+    @classmethod
+    def default_config(cls, layout: str) -> EnvConfig:
+        if layout not in cls.DEFAULT_ENV_CONFIGS:
+            raise ValueError(f"Unknown layout: {layout}")
+        return cls.DEFAULT_ENV_CONFIGS[layout]
 
     def _empty_last_seen(self) -> Dict[AgentId, LastSeenInfo]:
         return {agent_id: LastSeenInfo() for agent_id in self.agent_ids}

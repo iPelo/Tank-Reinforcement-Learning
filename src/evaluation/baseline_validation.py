@@ -13,7 +13,15 @@ def validate_against_baseline(candidate_model_path: str, baseline_model_path: st
     baseline_model, baseline_ckpt = load_policy(baseline_model_path, device)
     layout = str(candidate_ckpt.get("layout", baseline_ckpt.get("layout", "1v1")))
 
-    env_a = TankEnv(w=15, h=15, max_steps=200, seed=0, wall_density=0.12, layout=layout)
+    env_cfg = TankEnv.default_config(layout)
+    env_a = TankEnv(
+        w=env_cfg.w,
+        h=env_cfg.h,
+        max_steps=env_cfg.max_steps,
+        seed=0,
+        wall_density=env_cfg.wall_density,
+        layout=layout,
+    )
     candidate_as_player = run_match_series(
         env=env_a,
         player_model=candidate_model,
@@ -23,7 +31,14 @@ def validate_against_baseline(candidate_model_path: str, baseline_model_path: st
         phase=phase,
     )
 
-    env_b = TankEnv(w=15, h=15, max_steps=200, seed=1, wall_density=0.12, layout=layout)
+    env_b = TankEnv(
+        w=env_cfg.w,
+        h=env_cfg.h,
+        max_steps=env_cfg.max_steps,
+        seed=1,
+        wall_density=env_cfg.wall_density,
+        layout=layout,
+    )
     baseline_as_player = run_match_series(
         env=env_b,
         player_model=baseline_model,

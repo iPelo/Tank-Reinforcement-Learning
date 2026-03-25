@@ -128,7 +128,15 @@ def main() -> None:
     ap.add_argument("--layout", type=str, default="1v1", choices=("1v1", "1v2", "2v2"))
     args = ap.parse_args()
 
-    env = TankEnv(w=15, h=15, max_steps=200, seed=0, wall_density=0.12, layout=args.layout)
+    env_cfg = TankEnv.default_config(args.layout)
+    env = TankEnv(
+        w=env_cfg.w,
+        h=env_cfg.h,
+        max_steps=env_cfg.max_steps,
+        seed=0,
+        wall_density=env_cfg.wall_density,
+        layout=args.layout,
+    )
     renderer = PygameRenderer(cell_size=32, fps=20) if args.render else None
 
     try:

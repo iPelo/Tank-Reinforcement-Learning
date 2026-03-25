@@ -135,7 +135,15 @@ def main() -> None:
     enemy_model, enemy_ckpt = load_policy(args.enemy_model, device)
 
     layout = args.layout or str(player_ckpt.get("layout", enemy_ckpt.get("layout", "1v1")))
-    env = TankEnv(w=15, h=15, max_steps=200, seed=0, wall_density=0.12, layout=layout)
+    env_cfg = TankEnv.default_config(layout)
+    env = TankEnv(
+        w=env_cfg.w,
+        h=env_cfg.h,
+        max_steps=env_cfg.max_steps,
+        seed=0,
+        wall_density=env_cfg.wall_density,
+        layout=layout,
+    )
     metrics = run_match_series(
         env=env,
         player_model=player_model,

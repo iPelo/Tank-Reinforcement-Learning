@@ -702,7 +702,15 @@ def evaluate_best_candidate(
             "draw_rate": 0.0,
             "avg_player_return": 0.0,
         }
-    env = TankEnv(w=15, h=15, max_steps=200, seed=0, wall_density=0.12)
+    env_cfg = TankEnv.default_config(layout)
+    env = TankEnv(
+        w=env_cfg.w,
+        h=env_cfg.h,
+        max_steps=env_cfg.max_steps,
+        seed=0,
+        wall_density=env_cfg.wall_density,
+        layout=layout,
+    )
     aggregate = {
         "score": 0.0,
         "player_win_rate": 0.0,
@@ -772,7 +780,15 @@ def run_training(args: argparse.Namespace) -> None:
     rng = np.random.default_rng(0)
     opponent_mix = resolve_opponent_mix(args)
 
-    env = TankEnv(w=15, h=15, max_steps=200, seed=0, wall_density=0.12, layout=args.layout)
+    env_cfg = TankEnv.default_config(args.layout)
+    env = TankEnv(
+        w=env_cfg.w,
+        h=env_cfg.h,
+        max_steps=env_cfg.max_steps,
+        seed=0,
+        wall_density=env_cfg.wall_density,
+        layout=args.layout,
+    )
     obs_by_agent = env.reset(phase=args.phase)
 
     agent_ids = tuple(env.agent_ids)

@@ -46,7 +46,15 @@ def build_league_report(current_model_path: str, episodes: int, phase: int, seed
     report_rows: list[dict[str, object]] = []
     for label, opponent_path in opponents:
         enemy_model, enemy_ckpt = load_policy(str(opponent_path), device)
-        env = TankEnv(w=15, h=15, max_steps=200, seed=0, wall_density=0.12, layout=layout)
+        env_cfg = TankEnv.default_config(layout)
+        env = TankEnv(
+            w=env_cfg.w,
+            h=env_cfg.h,
+            max_steps=env_cfg.max_steps,
+            seed=0,
+            wall_density=env_cfg.wall_density,
+            layout=layout,
+        )
         metrics = run_match_series(
             env=env,
             player_model=player_model,
