@@ -42,7 +42,7 @@
       "cwd": "${workspaceFolder}"
     },
     {
-      "name": "Quick Eval 1v1",
+      "name": "Quick Eval Latest 1v1",
       "type": "python",
       "request": "launch",
       "python": "${workspaceFolder}/.venv/bin/python",
@@ -53,13 +53,15 @@
         "--layout",
         "1v1",
         "--episodes",
-        "3"
+        "3",
+        "--model",
+        "src/scripts/models/ppo_phase2_last.pt"
       ],
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}"
     },
     {
-      "name": "Render Eval 1v1",
+      "name": "Render Latest 1v1",
       "type": "python",
       "request": "launch",
       "python": "${workspaceFolder}/.venv/bin/python",
@@ -71,13 +73,15 @@
         "1v1",
         "--episodes",
         "10",
-        "--render"
+        "--render",
+        "--model",
+        "src/scripts/models/ppo_phase2_last.pt"
       ],
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}"
     },
     {
-      "name": "Render Eval 2v2",
+      "name": "Render Latest 2v2",
       "type": "python",
       "request": "launch",
       "python": "${workspaceFolder}/.venv/bin/python",
@@ -89,7 +93,9 @@
         "2v2",
         "--episodes",
         "10",
-        "--render"
+        "--render",
+        "--model",
+        "src/scripts/models/ppo_phase2_last.pt"
       ],
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}"
