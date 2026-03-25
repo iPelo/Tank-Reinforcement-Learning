@@ -101,13 +101,13 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument(
         "--min-updates-per-phase",
         type=int,
-        default=10,
+        default=None,
         help="Minimum PPO updates before phase promotion is allowed.",
     )
     ap.add_argument(
         "--advance-win-rate",
         type=float,
-        default=0.70,
+        default=None,
         help="Rolling win-rate threshold used to unlock the next phase.",
     )
     ap.add_argument(
@@ -119,13 +119,13 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument(
         "--snapshot-interval",
         type=int,
-        default=10,
+        default=None,
         help="Save a historical checkpoint to the opponent pool every N updates. Set to 0 to disable.",
     )
     ap.add_argument(
         "--pool-opponent-prob",
         type=float,
-        default=0.5,
+        default=None,
         help="Probability of sampling a frozen opponent from the pool instead of using current-policy self-play.",
     )
     ap.add_argument(
@@ -137,37 +137,37 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument(
         "--max-pool-size",
         type=int,
-        default=20,
+        default=None,
         help="Maximum number of snapshots to keep per phase in the opponent pool. Set to 0 to disable size pruning.",
     )
     ap.add_argument(
         "--keep-every",
         type=int,
-        default=1,
+        default=None,
         help="When pruning, only keep snapshots whose update number is a multiple of this value.",
     )
     ap.add_argument(
         "--eval-interval",
         type=int,
-        default=10,
+        default=None,
         help="Run evaluation for best-model tracking every N updates. Set to 0 to disable.",
     )
     ap.add_argument(
         "--best-eval-episodes",
         type=int,
-        default=6,
+        default=None,
         help="Number of episodes to run when scoring a candidate best model.",
     )
     ap.add_argument(
         "--promotion-eval-episodes",
         type=int,
-        default=8,
+        default=None,
         help="Number of episodes to run when checking whether the current phase can advance.",
     )
     ap.add_argument(
         "--policy-arch",
         type=str,
-        default="recurrent",
+        default=None,
         choices=("feedforward", "recurrent"),
         help="Training policy architecture.",
     )
@@ -179,6 +179,52 @@ def parse_args() -> argparse.Namespace:
         help="Environment layout to train on.",
     )
     return ap.parse_args()
+
+
+def apply_layout_training_defaults(args: argparse.Namespace) -> argparse.Namespace:
+    defaults_by_layout: dict[str, dict[str, Any]] = {
+        "1v1": {
+            "policy_arch": "recurrent",
+            "min_updates_per_phase": 10,
+            "advance_win_rate": 0.70,
+            "snapshot_interval": 20,
+            "pool_opponent_prob": 0.0,
+            "max_pool_size": 12,
+            "keep_every": 1,
+            "eval_interval": 20,
+            "best_eval_episodes": 10,
+            "promotion_eval_episodes": 12,
+        },
+        "1v2": {
+            "policy_arch": "recurrent",
+            "min_updates_per_phase": 10,
+            "advance_win_rate": 0.70,
+            "snapshot_interval": 10,
+            "pool_opponent_prob": 0.5,
+            "max_pool_size": 20,
+            "keep_every": 1,
+            "eval_interval": 10,
+            "best_eval_episodes": 6,
+            "promotion_eval_episodes": 8,
+        },
+        "2v2": {
+            "policy_arch": "recurrent",
+            "min_updates_per_phase": 10,
+            "advance_win_rate": 0.70,
+            "snapshot_interval": 10,
+            "pool_opponent_prob": 0.5,
+            "max_pool_size": 20,
+            "keep_every": 1,
+            "eval_interval": 10,
+            "best_eval_episodes": 6,
+            "promotion_eval_episodes": 8,
+        },
+    }
+    layout_defaults = defaults_by_layout[args.layout]
+    for key, value in layout_defaults.items():
+        if getattr(args, key) is None:
+            setattr(args, key, value)
+    return args
 
 
 def make_algo(
@@ -776,6 +822,7 @@ def evaluate_phase_promotion(
 
 
 def run_training(args: argparse.Namespace) -> None:
+    args = apply_layout_training_defaults(args)
     device = torch.device("cpu")
     rng = np.random.default_rng(0)
     opponent_mix = resolve_opponent_mix(args)
@@ -1112,6 +1159,7 @@ def main() -> None:
 
 
 __all__ = [
+    "apply_layout_training_defaults",
     "build_ckpt_payload",
     "build_best_eval_opponents",
     "CHECKPOINT_VERSION",
