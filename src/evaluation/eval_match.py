@@ -9,20 +9,80 @@ from src.env.tank_env import TankEnv
 from src.evaluation.checkpoint_match import act_with_policy, init_policy_runtime, load_policy
 
 
+def _empty_episode_trace(env: TankEnv) -> dict[str, object]:
+    return {
+        "first_contact_step": None,
+        "team_shots": {team_id: 0 for team_id in env.team_ids()},
+        "team_hits": {team_id: 0 for team_id in env.team_ids()},
+    }
+
+
+def _update_episode_trace(env: TankEnv, info: dict, trace: dict[str, object]) -> None:
+    step_info = info["info"]
+    if trace["first_contact_step"] is None and any(step_info.agent_hits.values()):
+        trace["first_contact_step"] = int(step_info.steps)
+
+    actions = info["actions"]
+    for agent_id, action in actions.items():
+        if int(action) == 5:
+            team_id = env.team_of(agent_id)
+            trace["team_shots"][team_id] += 1
+
+    for agent_id, did_hit in step_info.agent_hits.items():
+        if did_hit:
+            team_id = env.team_of(agent_id)
+            trace["team_hits"][team_id] += 1
+
+
+def _print_eval_summary(
+    label: str,
+    env: TankEnv,
+    blue_wins: list[int],
+    red_wins: list[int],
+    draws: list[int],
+    steps_history: list[int],
+    first_contact_steps: list[int],
+    blue_shots: list[int],
+    red_shots: list[int],
+    blue_hits: list[int],
+    red_hits: list[int],
+) -> None:
+    print(
+        f"{label} {env.layout_name} SUMMARY | episodes={len(steps_history)} "
+        f"| blue_wr={np.mean(blue_wins) if blue_wins else 0.0:.2f} "
+        f"red_wr={np.mean(red_wins) if red_wins else 0.0:.2f} "
+        f"dr={np.mean(draws) if draws else 0.0:.2f} "
+        f"| avg_steps={np.mean(steps_history) if steps_history else 0.0:.1f} "
+        f"| avg_contact_step={np.mean(first_contact_steps) if first_contact_steps else 0.0:.1f} "
+        f"| blue_shots={np.mean(blue_shots) if blue_shots else 0.0:.1f} "
+        f"red_shots={np.mean(red_shots) if red_shots else 0.0:.1f} "
+        f"| blue_hits={np.mean(blue_hits) if blue_hits else 0.0:.1f} "
+        f"red_hits={np.mean(red_hits) if red_hits else 0.0:.1f}"
+    )
+
+
 def run_random(env: TankEnv, renderer: PygameRenderer | None, episodes: int, seed: int, phase: int) -> None:
     rng = np.random.default_rng(seed)
     blue_wins: list[int] = []
     red_wins: list[int] = []
     draws: list[int] = []
+    steps_history: list[int] = []
+    first_contact_steps: list[int] = []
+    blue_shots: list[int] = []
+    red_shots: list[int] = []
+    blue_hits: list[int] = []
+    red_hits: list[int] = []
 
     for ep in range(episodes):
         _ = env.reset(phase=phase)
         returns = {team_id: 0.0 for team_id in env.team_ids()}
+        trace = _empty_episode_trace(env)
         done = False
 
         while not done:
             actions = {agent_id: int(rng.integers(0, 6)) for agent_id in env.agent_ids}
             _, _, done, info = env.step(actions)
+            _update_episode_trace(env, info, trace)
             for team_id, reward in info["team_rewards"].items():
                 returns[team_id] += float(reward)
 
@@ -40,6 +100,12 @@ def run_random(env: TankEnv, renderer: PygameRenderer | None, episodes: int, see
         blue_wins.append(int(si.team_wins.get("blue", False)))
         red_wins.append(int(si.team_wins.get("red", False)))
         draws.append(int(si.draw))
+        steps_history.append(int(si.steps))
+        first_contact_steps.append(int(trace["first_contact_step"] or si.steps))
+        blue_shots.append(int(trace["team_shots"].get("blue", 0)))
+        red_shots.append(int(trace["team_shots"].get("red", 0)))
+        blue_hits.append(int(trace["team_hits"].get("blue", 0)))
+        red_hits.append(int(trace["team_hits"].get("red", 0)))
         if len(blue_wins) > 100:
             blue_wins.pop(0)
             red_wins.pop(0)
@@ -51,9 +117,26 @@ def run_random(env: TankEnv, renderer: PygameRenderer | None, episodes: int, see
         print(
             f"RAND {env.layout_name} EP {ep:03d} | steps={si.steps:3d} "
             f"| Rb={returns.get('blue', 0.0):6.2f} Rr={returns.get('red', 0.0):6.2f} "
+            f"| contact={int(trace['first_contact_step'] or si.steps):3d} "
+            f"| shots_b={int(trace['team_shots'].get('blue', 0)):2d} shots_r={int(trace['team_shots'].get('red', 0)):2d} "
+            f"| hits_b={int(trace['team_hits'].get('blue', 0)):2d} hits_r={int(trace['team_hits'].get('red', 0)):2d} "
             f"| blue_win={si.team_wins.get('blue', False)} red_win={si.team_wins.get('red', False)} draw={si.draw}"
             f"| last100_bwr={wr:.2f} rwr={lr:.2f} dr={dr:.2f}"
         )
+
+    _print_eval_summary(
+        "RAND",
+        env,
+        blue_wins,
+        red_wins,
+        draws,
+        steps_history,
+        first_contact_steps,
+        blue_shots,
+        red_shots,
+        blue_hits,
+        red_hits,
+    )
 
 
 def run_model(env: TankEnv, renderer: PygameRenderer | None, episodes: int, model_path: str, phase: int) -> None:
@@ -72,11 +155,18 @@ def run_model(env: TankEnv, renderer: PygameRenderer | None, episodes: int, mode
     blue_wins: list[int] = []
     red_wins: list[int] = []
     draws: list[int] = []
+    steps_history: list[int] = []
+    first_contact_steps: list[int] = []
+    blue_shots: list[int] = []
+    red_shots: list[int] = []
+    blue_hits: list[int] = []
+    red_hits: list[int] = []
 
     for ep in range(episodes):
         obs_by_agent = env.reset(phase=phase)
         runtimes = {agent_id: init_policy_runtime(model, device) for agent_id in env.agent_ids}
         returns = {team_id: 0.0 for team_id in env.team_ids()}
+        trace = _empty_episode_trace(env)
         done = False
 
         while not done:
@@ -86,6 +176,7 @@ def run_model(env: TankEnv, renderer: PygameRenderer | None, episodes: int, mode
                 actions[agent_id] = act_with_policy(model, obs_t, runtimes[agent_id])
 
             obs_by_agent, _, done, info = env.step(actions)
+            _update_episode_trace(env, info, trace)
             for team_id, reward in info["team_rewards"].items():
                 returns[team_id] += float(reward)
 
@@ -103,6 +194,12 @@ def run_model(env: TankEnv, renderer: PygameRenderer | None, episodes: int, mode
         blue_wins.append(int(si.team_wins.get("blue", False)))
         red_wins.append(int(si.team_wins.get("red", False)))
         draws.append(int(si.draw))
+        steps_history.append(int(si.steps))
+        first_contact_steps.append(int(trace["first_contact_step"] or si.steps))
+        blue_shots.append(int(trace["team_shots"].get("blue", 0)))
+        red_shots.append(int(trace["team_shots"].get("red", 0)))
+        blue_hits.append(int(trace["team_hits"].get("blue", 0)))
+        red_hits.append(int(trace["team_hits"].get("red", 0)))
         if len(blue_wins) > 100:
             blue_wins.pop(0)
             red_wins.pop(0)
@@ -114,9 +211,26 @@ def run_model(env: TankEnv, renderer: PygameRenderer | None, episodes: int, mode
         print(
             f"PPO {env.layout_name} EP {ep:03d} | steps={si.steps:3d} "
             f"| Rb={returns.get('blue', 0.0):6.2f} Rr={returns.get('red', 0.0):6.2f} "
+            f"| contact={int(trace['first_contact_step'] or si.steps):3d} "
+            f"| shots_b={int(trace['team_shots'].get('blue', 0)):2d} shots_r={int(trace['team_shots'].get('red', 0)):2d} "
+            f"| hits_b={int(trace['team_hits'].get('blue', 0)):2d} hits_r={int(trace['team_hits'].get('red', 0)):2d} "
             f"| blue_win={si.team_wins.get('blue', False)} red_win={si.team_wins.get('red', False)} draw={si.draw}"
             f"| last100_bwr={wr:.2f} rwr={lr:.2f} dr={dr:.2f}"
         )
+
+    _print_eval_summary(
+        "PPO",
+        env,
+        blue_wins,
+        red_wins,
+        draws,
+        steps_history,
+        first_contact_steps,
+        blue_shots,
+        red_shots,
+        blue_hits,
+        red_hits,
+    )
 
 
 def main() -> None:
