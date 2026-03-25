@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import torch
 import torch.nn as nn
 
@@ -120,32 +118,5 @@ class RecurrentActorCritic(nn.Module):
         action = dist.sample()
         logp = dist.log_prob(action)
         return action, logp, value, next_state
-
-
-@dataclass
-class ModelIO:
-    obs_dim: int
-    act_dim: int
-    hidden: int = 128
-
-    def build(self) -> ActorCritic:
-        return ActorCritic(self.obs_dim, self.act_dim, self.hidden)
-
-
-@dataclass
-class RecurrentModelIO:
-    obs_dim: int
-    act_dim: int
-    hidden: int = 128
-    recurrent_hidden: int = 128
-
-    def build(self) -> RecurrentActorCritic:
-        return RecurrentActorCritic(
-            obs_dim=self.obs_dim,
-            act_dim=self.act_dim,
-            hidden=self.hidden,
-            recurrent_hidden=self.recurrent_hidden,
-        )
-
 
 PolicyModel = ActorCritic | RecurrentActorCritic

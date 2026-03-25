@@ -150,15 +150,6 @@ class TankEnv:
         team_id = self.team_of(agent_id)
         return tuple(candidate for candidate in self.agent_ids if self.team_of(candidate) != team_id)
 
-    def _opponent_id(self, agent_id: AgentId) -> AgentId:
-        opponents = self.opponents_of(agent_id)
-        if opponents:
-            return opponents[0]
-        raise ValueError(f"No opponent defined for {agent_id}")
-
-    def _opponent(self, agent_id: AgentId) -> Tank:
-        return self._tank(self._opponent_id(agent_id))
-
     def _reachable(self, start: Coord, goal: Coord,walls: Set[Coord]) -> bool:
         from collections import deque
 
@@ -180,9 +171,6 @@ class TankEnv:
                 seen.add((nx,ny))
                 q.append((nx,ny))
         return  False
-
-    def available_layouts(self) -> tuple[str, ...]:
-        return tuple(self.LAYOUTS.keys())
 
     def _random_spawn_positions(self) -> Dict[AgentId, Coord]:
         positions: Dict[AgentId, Coord] = {}
@@ -565,11 +553,6 @@ class TankEnv:
         if not same_row and not same_col:
             return False
         return self._clear_line((observer.x, observer.y), (target.x, target.y))
-
-    def _best_turn_toward(self, tank: Tank, goal_dir: Direction) -> Action:
-        left_steps = (int(tank.dir) - int(goal_dir)) % 4
-        right_steps = (int(goal_dir) - int(tank.dir)) % 4
-        return Action.LEFT if left_steps <= right_steps else Action.RIGHT
 
     def _nearest_opponent_distance(
         self,

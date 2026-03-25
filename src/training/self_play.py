@@ -562,14 +562,6 @@ def list_compatible_opponent_snapshots(
     return compatible
 
 
-def sample_opponent_snapshot(models_dir: Path, phase: int, rng: np.random.Generator) -> Path | None:
-    snapshots = list_opponent_snapshots(models_dir, phase)
-    if not snapshots:
-        return None
-    idx = int(rng.integers(0, len(snapshots)))
-    return snapshots[idx]
-
-
 def snapshot_update_number(path: Path) -> int:
     stem = path.stem
     marker = "_upd"
@@ -985,8 +977,8 @@ def run_training(args: argparse.Namespace) -> None:
             wr100 = float(np.mean(episode_stats["learner_wins"][-100:])) if episode_stats["learner_wins"] else 0.0
             lr100 = float(np.mean(episode_stats["opponent_wins"][-100:])) if episode_stats["opponent_wins"] else 0.0
             dr100 = float(np.mean(episode_stats["draws"][-100:])) if episode_stats["draws"] else 0.0
-            player_ret10 = float(np.mean(episode_stats["learner_returns"][-10:])) if episode_stats["learner_returns"] else 0.0
-            enemy_ret10 = float(np.mean(episode_stats["opponent_returns"][-10:])) if episode_stats["opponent_returns"] else 0.0
+            learner_ret10 = float(np.mean(episode_stats["learner_returns"][-10:])) if episode_stats["learner_returns"] else 0.0
+            opponent_ret10 = float(np.mean(episode_stats["opponent_returns"][-10:])) if episode_stats["opponent_returns"] else 0.0
             recent_opponents = episode_stats["opponent_types"][-20:]
             self_play_rate20 = (
                 sum(1 for value in recent_opponents if value == "self_play") / len(recent_opponents)
@@ -1002,8 +994,8 @@ def run_training(args: argparse.Namespace) -> None:
             print(
                 f"phase={phase} upd={total_updates:04d} phase_upd={phase_updates:04d} "
                 f"env_steps={global_step:07d} samples={train_buf.ptr:04d} mean_ret10={mean_ret10:7.3f} "
-                f"player_ret10={player_ret10:7.3f} enemy_ret10={enemy_ret10:7.3f} "
-                f"player_wr100={wr100:5.2f} enemy_wr100={lr100:5.2f} dr100={dr100:5.2f} "
+                f"learner_ret10={learner_ret10:7.3f} opponent_ret10={opponent_ret10:7.3f} "
+                f"learner_wr100={wr100:5.2f} opponent_wr100={lr100:5.2f} dr100={dr100:5.2f} "
                 f"self_play_rate20={self_play_rate20:4.2f} frozen_rate20={frozen_rate20:4.2f} "
                 f"opp={round_opponent_label} "
                 f"pi={metrics['pi_loss']:.3f} v={metrics['v_loss']:.3f} "
@@ -1180,7 +1172,6 @@ __all__ = [
     "resolve_opponent_mix",
     "run_rollout",
     "run_training",
-    "sample_opponent_snapshot",
     "save_ckpt",
     "save_opponent_snapshot",
     "snapshot_update_number",
