@@ -19,8 +19,8 @@ class EnvState:
 
 @dataclass
 class LastSeenInfo:
-    dx: float = 0.0
-    dy: float = 0.0
+    x: float = 0.0
+    y: float = 0.0
     age: int = -1
 
 
@@ -108,6 +108,7 @@ class TankEnv:
         self.last_shot_ttl: int = 0
         self.last_seen_enemy: Dict[AgentId, LastSeenInfo] = self._empty_last_seen()
         self.last_step_events: Dict[AgentId, Dict[str, float]] = self._empty_step_events()
+        self.visited_cells: Dict[AgentId, Set[Coord]] = self._empty_visited_cells()
 
     @classmethod
     def default_config(cls, layout: str) -> EnvConfig:
@@ -123,6 +124,9 @@ class TankEnv:
             agent_id: {"took_hit": 0.0, "hit_enemy": 0.0, "heard_shot_fwd": 0.0, "heard_shot_side": 0.0}
             for agent_id in self.agent_ids
         }
+
+    def _empty_visited_cells(self) -> Dict[AgentId, Set[Coord]]:
+        return {agent_id: set() for agent_id in self.agent_ids}
 
     def _tank(self, agent_id: AgentId) -> Tank:
         assert self.state is not None
@@ -266,6 +270,10 @@ class TankEnv:
         self.last_shot_ttl = 0
         self.last_seen_enemy = self._empty_last_seen()
         self.last_step_events = self._empty_step_events()
+        self.visited_cells = self._empty_visited_cells()
+        for agent_id in self.agent_ids:
+            tank = self._tank(agent_id)
+            self.visited_cells[agent_id].add((tank.x, tank.y))
 
         return self.observe_all()
 
@@ -302,6 +310,8 @@ class TankEnv:
             agent_id: (self._tank(agent_id).x, self._tank(agent_id).y)
             for agent_id in self.agent_ids
         }
+        for agent_id, pos in post_positions.items():
+            self.visited_cells[agent_id].add(pos)
         enemy_visible = {
             agent_id: bool(self._pick_primary_opponent(agent_id, visible_only=True) is not None)
             for agent_id in self.agent_ids
@@ -666,8 +676,8 @@ class TankEnv:
             target = self._pick_primary_opponent(agent_id, visible_only=True)
             if target is not None:
                 self.last_seen_enemy[agent_id] = LastSeenInfo(
-                    dx=(target.x - observer.x) / max(1, self.w - 1),
-                    dy=(target.y - observer.y) / max(1, self.h - 1),
+                    x=target.x / max(1, self.w - 1),
+                    y=target.y / max(1, self.h - 1),
                     age=0,
                 )
             elif self.last_seen_enemy[agent_id].age >= 0:
@@ -723,7 +733,6 @@ class TankEnv:
             raise ValueError(f"Unknown agent_id: {agent_id}")
         t = self._tank(agent_id)
         enemies = tuple(self._tank(opponent_id) for opponent_id in self.opponents_of(agent_id) if self._tank(opponent_id).alive)
-        primary_enemy = self._pick_primary_opponent(agent_id)
 
         fwd = dir_to_vec(t.dir)
         back = (-fwd[0], -fwd[1])
@@ -766,11 +775,29 @@ class TankEnv:
         pos_norm = [t.x / max(1, self.w - 1), t.y / max(1, self.h - 1)]
         step_norm = float(self.state.steps) / float(self.max_steps) if self.max_steps > 0 else 0.0
         last_seen = self.last_seen_enemy[agent_id]
-        last_seen_age = (
-            min(float(last_seen.age) / float(self.max_steps), 1.0)
-            if last_seen.age >= 0 and self.max_steps > 0
-            else -1.0
-        )
+        if last_seen.age >= 0:
+            last_seen_xy = (
+                last_seen.x * max(1, self.w - 1),
+                last_seen.y * max(1, self.h - 1),
+            )
+            last_seen_fwd, last_seen_side = self._relative_direction_features(t, last_seen_xy)
+            last_seen_fwd /= max(1, self.h - 1)
+            last_seen_side /= max(1, self.w - 1)
+            last_seen_age = (
+                min(float(last_seen.age) / float(self.max_steps), 1.0)
+                if self.max_steps > 0
+                else 1.0
+            )
+            last_seen_valid = 1.0
+            search_pressure = max(0.0, 1.0 - last_seen_age)
+        else:
+            last_seen_fwd = 0.0
+            last_seen_side = 0.0
+            last_seen_age = 1.0
+            last_seen_valid = 0.0
+            search_pressure = 0.0
+        walkable_cells = (self.w * self.h) - len(self.state.walls)
+        explored_ratio = len(self.visited_cells[agent_id]) / max(1, walkable_cells)
         recent_events = self.last_step_events[agent_id]
 
         return np.array(
@@ -786,9 +813,12 @@ class TankEnv:
                 float(len(self.allies_of(agent_id))),
                 float(len(self.opponents_of(agent_id))),
                 step_norm,
-                last_seen.dx,
-                last_seen.dy,
+                last_seen_fwd,
+                last_seen_side,
                 last_seen_age,
+                last_seen_valid,
+                search_pressure,
+                float(explored_ratio),
                 recent_events["took_hit"],
                 recent_events["hit_enemy"],
                 recent_events["heard_shot_fwd"],
