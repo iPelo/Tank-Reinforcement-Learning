@@ -275,6 +275,10 @@ class TankEnv:
 
         s = self.state
         s.steps += 1
+        pre_positions = {
+            agent_id: (self._tank(agent_id).x, self._tank(agent_id).y)
+            for agent_id in self.agent_ids
+        }
         action_by_agent = {
             agent_id: Action(int(actions.get(agent_id, Action.NOOP)))
             for agent_id in self.agent_ids
@@ -294,6 +298,22 @@ class TankEnv:
         for agent_id, action in action_by_agent.items():
             self._apply_turn(self._tank(agent_id), action)
         self._apply_moves(action_by_agent)
+        post_positions = {
+            agent_id: (self._tank(agent_id).x, self._tank(agent_id).y)
+            for agent_id in self.agent_ids
+        }
+        enemy_visible = {
+            agent_id: bool(self._pick_primary_opponent(agent_id, visible_only=True) is not None)
+            for agent_id in self.agent_ids
+        }
+        pre_distance_to_enemy = {
+            agent_id: self._nearest_opponent_distance(agent_id, pre_positions)
+            for agent_id in self.agent_ids
+        }
+        post_distance_to_enemy = {
+            agent_id: self._nearest_opponent_distance(agent_id, post_positions)
+            for agent_id in self.agent_ids
+        }
 
         current_shots: Dict[str, Tuple[int, int, int, int, bool]] = {}
         hit_targets: Set[AgentId] = set()
@@ -337,6 +357,11 @@ class TankEnv:
                 loss=bool(winning_team is not None and self.team_of(agent_id) != winning_team),
                 draw=draw,
                 phase=s.phase,
+                hit_enemy=shooter_hits[agent_id],
+                took_hit=agent_id in hit_targets,
+                enemy_visible=enemy_visible[agent_id],
+                pre_enemy_distance=pre_distance_to_enemy[agent_id],
+                post_enemy_distance=post_distance_to_enemy[agent_id],
             )
             for agent_id in self.agent_ids
         }
@@ -536,16 +561,71 @@ class TankEnv:
         right_steps = (int(goal_dir) - int(tank.dir)) % 4
         return Action.LEFT if left_steps <= right_steps else Action.RIGHT
 
-    def _reward_for_side(self, action: Action, win: bool, loss: bool, draw: bool, phase: int) -> float:
+    def _nearest_opponent_distance(
+        self,
+        agent_id: AgentId,
+        positions: Dict[AgentId, Coord],
+    ) -> int | None:
+        origin = positions[agent_id]
+        distances = [
+            abs(origin[0] - positions[opponent_id][0]) + abs(origin[1] - positions[opponent_id][1])
+            for opponent_id in self.opponents_of(agent_id)
+        ]
+        if not distances:
+            return None
+        return min(distances)
+
+    def _reward_for_side(
+        self,
+        action: Action,
+        win: bool,
+        loss: bool,
+        draw: bool,
+        phase: int,
+        hit_enemy: bool,
+        took_hit: bool,
+        enemy_visible: bool,
+        pre_enemy_distance: int | None,
+        post_enemy_distance: int | None,
+    ) -> float:
         if win:
             return 1.0
         if loss:
             return -1.0
         if draw:
             return 0.0
+
+        reward = -0.006
+
+        if enemy_visible:
+            reward += 0.01
+
+        if hit_enemy:
+            reward += 0.22
+        if took_hit:
+            reward -= 0.22
+
+        if (
+            pre_enemy_distance is not None
+            and post_enemy_distance is not None
+            and action in (Action.FWD, Action.BWD)
+        ):
+            if post_enemy_distance < pre_enemy_distance:
+                reward += 0.012
+            elif post_enemy_distance > pre_enemy_distance:
+                reward -= 0.008
+
         if action == Action.SHOOT and phase >= 1:
-            return -0.02
-        return -0.01
+            if hit_enemy:
+                reward += 0.02
+            elif enemy_visible:
+                reward -= 0.012
+            else:
+                reward -= 0.03
+        elif action == Action.NOOP and not enemy_visible:
+            reward -= 0.004
+
+        return reward
 
     def _relative_direction_features(self, observer: Tank, target_xy: Coord) -> tuple[float, float]:
         tx, ty = target_xy
